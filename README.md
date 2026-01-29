@@ -86,3 +86,8 @@ novami/
 ├── README.md   This file!
 └── setup.py   Most of required libraries, some day I *might* add specific versions.
 ```
+
+### Changelog
+
+#### [0.3.0]: 29-01-2026
+Public release of repository.
