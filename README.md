@@ -3,7 +3,7 @@
 ### What is this repository?
 A collection of ML/AI code for chemistry applications developed during my PhD. 
 
-Primarily for personal use: function signatures and repository structure may change at any time. Feel free to use any code you find it helpful, but mind that the code written at the beginning of my PhD (February 2024), might be..., bad ¯\_(ツ)_/¯. New code works just fine though!
+Primarily for personal use: function signatures and repository structure may change at any time. Feel free to use any code you find helpful.
 
 For convenience, .py files that work and are up-to-date are marked with *, while those unlikely to work (and should be removed) with #. If no symbol is given, the code should work, but won't be compatibile with the rest of the repository.
 
