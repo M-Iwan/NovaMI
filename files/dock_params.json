@@ -1,0 +1,10 @@
+{"smina_path":  "/home/vantami/Repos/DRID/src/src_files/smina.static",
+    "protein_path":  "/home/vantami/Repos/[...]",
+    "output_dir":  "/home/vantami/Repos/[...]",
+    "x_coord":  "int",
+    "y_coord":  "int",
+    "z_coord":  "int",
+    "x_size":  "int",
+    "y_size":  "int",
+    "z_size":  "int",
+    "exhaustiveness":  "int"}

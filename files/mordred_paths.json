@@ -1,0 +1,5 @@
+{"io": "/home/vantami/Repos/DRID/venv/mordred/files", 
+"input": "/home/vantami/Repos/DRID/venv/cddd/files/mordred_input.csv", 
+"output": "/home/vantami/Repos/DRID/venv/cddd/files/mordred_output.pkl", 
+"python": "/home/vantami/anaconda3/envs/mordred/bin/python3.7", 
+"wrapper": "/home/vantami/Repos/DRID/command_line/Mordred_wrapper.py"}

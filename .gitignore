@@ -1,0 +1,10 @@
+/.idea
+.DS_Store
+/temp
+/tests
+/novami/internal
+code_dev.ipynb
+*.pyc
+projects/cddd_setup/default_model.zip
+/novami.egg-info
+files/smina.static
