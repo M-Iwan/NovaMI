@@ -1,6 +1,7 @@
 import json
 import os
 import pickle
+import requests
 from typing import Union, List, Dict
 
 import numpy as np
@@ -8,8 +9,8 @@ import pandas as pd
 import polars as pl
 from rdkit import Chem
 from rdkit.Chem import rdMolDescriptors, Descriptors, rdFingerprintGenerator
+
 import torch
-import requests
 
 from novami.io.file import read_pd, write_pd
 
@@ -579,6 +580,12 @@ def smiles_2_mapc(smiles: Union[str, List[str]], radius: int = 2, nbits: int = 1
 
 def dataframe_2_mapc(df: Union[pd.DataFrame, pl.DataFrame], smiles_col: str = 'SMILES', descriptor_col: str = 'MAPC',
     radius: int = 2, nbits: int = 1024):
+
+    try:
+        from mapchiral.mapchiral import encode
+    except ImportError:
+        raise ImportError("Function < dataframe_2_mapc > requires < mapchiral > library. Please install it "
+                          "with < pip install mapchiral >")
 
     if isinstance(df, pd.DataFrame):
         df[descriptor_col] = smiles_2_mapc(df[smiles_col].tolist(), radius=radius, nbits=nbits)
