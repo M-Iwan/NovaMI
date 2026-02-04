@@ -7,7 +7,7 @@ import polars as pl
 
 from sklearn.model_selection import KFold, StratifiedKFold, GroupKFold, StratifiedGroupKFold
 
-from novami.data.process import bin_data
+from novami.data.manipulate import bin_data
 from novami.data.cluster import butina_cluster, murcko_cluster, cc_cluster
 
 
@@ -189,7 +189,7 @@ def stratified_train_test_split(df: pl.DataFrame, fraction: float, strat_col: Un
         raise ValueError(f"Expected a float between 0 and 1, got {fraction} instead.")
 
     if not isinstance(strat_col, (str, list)):
-        raise TypeError(f"Expected the <strat_col> to be a list or str, got {type(strat_col)} instead.")
+        raise TypeError(f"Expected the < strat_col > to be a list or str, got {type(strat_col)} instead.")
 
     if isinstance(strat_col, str):
         strat_col = [strat_col]
@@ -218,10 +218,9 @@ def stratified_train_test_split(df: pl.DataFrame, fraction: float, strat_col: Un
     return train_df, test_df
 
 
-def minimal_train_test_split(df: pl.DataFrame, fraction: float, tolerance: float = 0.05, group_col: str = 'Group'):
+def minimal_train_test_split(df: pl.DataFrame, fraction: float, tolerance: float = 0.05, cluster_col: str = 'Cluster'):
     """
-    Split the pre-defined clusters into training and testing data, assigning the smallest
-    clusters to the test set.
+    Split the pre-defined clusters into training and testing data, assigning the smallest clusters to the test set.
 
     Parameters
     -----------
@@ -231,7 +230,7 @@ def minimal_train_test_split(df: pl.DataFrame, fraction: float, tolerance: float
         Fraction of data to use for the TEST set.
     tolerance: float
         Allowed deviation in fraction.
-    group_col: str
+    cluster_col: str
         Name of the column containing group identifiers.
 
     Returns
@@ -245,10 +244,10 @@ def minimal_train_test_split(df: pl.DataFrame, fraction: float, tolerance: float
     if fraction < 0 or fraction > 1:
         raise ValueError(f"Expected a float between 0 and 1, got {fraction} instead.")
 
-    if not isinstance(group_col, str):
-        raise TypeError(f"Expected the < group_col > to be str, got {type(group_col)} instead.")
+    if not isinstance(cluster_col, str):
+        raise TypeError(f"Expected the < cluster_col > to be str, got {type(cluster_col)} instead.")
 
-    cluster_counts = df[group_col].value_counts(name='Count').sort('Count')
+    cluster_counts = df[cluster_col].value_counts(name='Count').sort('Count')
     n_test = math.ceil(len(df) * fraction)
     top_test = math.ceil(len(df) * (fraction + tolerance))
 
@@ -266,8 +265,8 @@ def minimal_train_test_split(df: pl.DataFrame, fraction: float, tolerance: float
         print('Unable to partition the date with required fraction')
         return None, None
 
-    train_df = df.filter(~pl.col(group_col).is_in(clusters))
-    test_df = df.filter(pl.col(group_col).is_in(clusters))
+    train_df = df.filter(~pl.col(cluster_col).is_in(clusters))
+    test_df = df.filter(pl.col(cluster_col).is_in(clusters))
 
     return train_df, test_df
 
@@ -335,7 +334,7 @@ def stratified_kfold_split(df: pl.DataFrame, strat_col: str, n_folds: int = 5, s
     return df
 
 
-def group_kfold_split(df: pl.DataFrame, group_col: str, n_folds: int = 5, seed: int = 42):
+def group_kfold_split(df: pl.DataFrame, cluster_col: str, n_folds: int = 5, seed: int = 42):
     """
     Assigns group-based k-fold cross-validation fold indices to rows in a polars DataFrame.
 
@@ -343,7 +342,7 @@ def group_kfold_split(df: pl.DataFrame, group_col: str, n_folds: int = 5, seed: 
     -----------
     df: pl.DataFrame
         Input DataFrame to split into group-based folds.
-    group_col: str
+    cluster_col: str
         Name of the column containing group identifiers.
     n_folds: int, default=5
         Number of folds for group k-fold cross-validation.
@@ -362,14 +361,14 @@ def group_kfold_split(df: pl.DataFrame, group_col: str, n_folds: int = 5, seed: 
     x_array = np.zeros(len(df))
     y_array = np.zeros(len(df))
 
-    for idx, (_, test_idx) in enumerate(gkf.split(x_array, y_array, groups=df[group_col])):
+    for idx, (_, test_idx) in enumerate(gkf.split(x_array, y_array, groups=df[cluster_col])):
         df[test_idx, 'Fold' ] = idx
 
     return df
 
 
-def stratified_group_kfold_split(df: pl.DataFrame, strat_col: Union[str, List[str]],
-                                 group_col: str, n_folds: int = 5, seed: int = 42):
+def stratified_group_kfold_split(df: pl.DataFrame, strat_col: Union[str, List[str]], cluster_col: str, n_folds: int = 5,
+                                 seed: int = 42):
     """
     Assigns stratified group-based k-fold cross-validation fold indices to rows in a polars DataFrame.
 
@@ -379,7 +378,7 @@ def stratified_group_kfold_split(df: pl.DataFrame, strat_col: Union[str, List[st
         Input DataFrame to split into stratified group-based folds.
     strat_col: Union[str, List[str]]
         Name of the column or list of columns to use for stratification.
-    group_col: str
+    cluster_col: str
         Name of the column containing group identifiers.
     n_folds: int, default=5
         Number of folds for stratified group k-fold cross-validation.
@@ -397,7 +396,7 @@ def stratified_group_kfold_split(df: pl.DataFrame, strat_col: Union[str, List[st
 
     x_array = np.zeros(len(df))
     y_array = df['Bin'].to_numpy()
-    groups = df[group_col].to_numpy()
+    groups = df[cluster_col].to_numpy()
 
     for idx, (_, test_idx) in enumerate(sgkf.split(x_array, y_array, groups=groups)):
         df[test_idx, 'Fold' ] = idx
@@ -435,8 +434,8 @@ def temporal_split(df: pl.DataFrame, time_col: str, fraction: float = 0.2):
     return train_df, test_df
 
 
-def murcko_split(df: pl.DataFrame, strat_col: Union[str, List[str]] = None, smiles_col: str = 'SMILES',
-                 n_folds: int = 5, generic: bool = False, tolerance: float = 0.2):
+def murcko_kfold_split(df: pl.DataFrame, strat_col: Union[str, List[str]] = None, smiles_col: str = 'SMILES',
+                       n_folds: int = 5, generic: bool = False, tolerance: float = 0.3):
     """
     Splits a DataFrame into folds based on Murcko scaffolds.
 
@@ -452,7 +451,7 @@ def murcko_split(df: pl.DataFrame, strat_col: Union[str, List[str]] = None, smil
         Number of folds for cross-validation.
     generic: bool, default=False
         Whether to use generic Murcko scaffolds (without atom types) or specific scaffolds.
-    tolerance: float, default=0.2
+    tolerance: float, default=0.3
         Maximum acceptable Relative Standard Deviation between fold sizes.
 
     Returns
@@ -468,20 +467,21 @@ def murcko_split(df: pl.DataFrame, strat_col: Union[str, List[str]] = None, smil
     df = df.join(unique_df, how='inner', on=smiles_col)
 
     if strat_col is not None:
-        df = stratified_group_kfold_split(df=df, strat_col=strat_col, group_col='Cluster', n_folds=n_folds)
+        df = stratified_group_kfold_split(df=df, strat_col=strat_col, cluster_col='Cluster', n_folds=n_folds)
     else:
-        df = group_kfold_split(df=df, group_col='Cluster', n_folds=n_folds)
+        df = group_kfold_split(df=df, cluster_col='Cluster', n_folds=n_folds)
 
     fold_sizes = df['Fold'].value_counts(name='Size')['Size'].to_numpy()
 
     if not are_folds_balanced(fold_sizes, tolerance=tolerance):
-        raise RuntimeWarning(f'Prepared folds are not balanced at < {tolerance} > level.')
+        raise RuntimeError(f'Folds are not balanced at < {tolerance} > tolerance')
 
     return df
 
-def butina_split(df: pl.DataFrame, strat_col: Union[str, List[str]] = None, smiles_col: str = 'SMILES',
-                 fp_col: str = 'Morgan', threshold: float = 0.4, batch_size: int = 512, n_folds: int = 5,
-                 n_jobs: int = 1, tolerance: float = 0.2):
+
+def butina_kfold_split(df: pl.DataFrame, strat_col: Union[str, List[str]] = None, smiles_col: str = 'SMILES',
+                       fp_col: str = 'Morgan', threshold: float = 0.4, batch_size: int = 512, n_folds: int = 5,
+                       n_jobs: int = 1, tolerance: float = 0.3):
 
     """
     Splits a DataFrame into folds based on Butina clustering.
@@ -504,7 +504,7 @@ def butina_split(df: pl.DataFrame, strat_col: Union[str, List[str]] = None, smil
         Number of folds for cross-validation.
     n_jobs: int, default=11
         Number of parallel jobs to run (-1 means using all processors).
-    tolerance: float, default=0.2
+    tolerance: float, default=0.3
         Maximum acceptable Relative Standard Deviation between fold sizes.
 
     Returns
@@ -520,21 +520,22 @@ def butina_split(df: pl.DataFrame, strat_col: Union[str, List[str]] = None, smil
     df = df.join(unique_df[[smiles_col, 'Cluster']], how='inner', on=smiles_col)
 
     if strat_col is not None:
-        df = stratified_group_kfold_split(df=df, strat_col=strat_col, group_col='Cluster', n_folds=n_folds)
+        df = stratified_group_kfold_split(df=df, strat_col=strat_col, cluster_col='Cluster', n_folds=n_folds)
     else:
-        df = group_kfold_split(df=df, group_col='Cluster', n_folds=n_folds)
+        df = group_kfold_split(df=df, cluster_col='Cluster', n_folds=n_folds)
 
     fold_sizes = df['Fold'].value_counts(name='Size')['Size'].to_numpy()
 
     if not are_folds_balanced(fold_sizes, tolerance=tolerance):
-        raise RuntimeWarning(f'Prepared folds are not balanced at < {tolerance} > level.')
+        raise RuntimeError(f'Folds are not balanced at < {tolerance} > tolerance and < {threshold} > threshold.')
 
     return df
 
 
-def ccpart_split(df: pl.DataFrame, strat_col: Union[str, List[str]] = None, smiles_col: str = 'SMILES',
-                 features_col: str = 'Morgan', threshold: float = 0.3, metric: str = 'jaccard', n_folds: int = 5,
-                 n_jobs: int = 11, tolerance: float = 0.2):
+def cc_kfold_split(df: pl.DataFrame, strat_col: Union[str, List[str]] = None, smiles_col: str = 'SMILES',
+                   features_col: str = 'Morgan', threshold: float = 0.3, metric: str = 'jaccard', n_folds: int = 5,
+                   n_jobs: int = 11, tolerance: float = 0.3):
+
     """
     Splits a DataFrame into folds based on connected components clustering.
 
@@ -556,7 +557,7 @@ def ccpart_split(df: pl.DataFrame, strat_col: Union[str, List[str]] = None, smil
         Number of folds for cross-validation.
     n_jobs: int, default=1
         Number of parallel jobs to run (-1 means using all processors).
-    tolerance: float, default=0.2
+    tolerance: float, default=0.3
         Maximum acceptable Relative Standard Deviation between fold sizes.
 
     Returns
@@ -572,17 +573,16 @@ def ccpart_split(df: pl.DataFrame, strat_col: Union[str, List[str]] = None, smil
     df = df.join(unique_df[[smiles_col, 'Cluster']], how='inner', on=smiles_col)
 
     if strat_col is not None:
-        df = stratified_group_kfold_split(df=df, strat_col=strat_col, group_col='Cluster', n_folds=n_folds)
+        df = stratified_group_kfold_split(df=df, strat_col=strat_col, cluster_col='Cluster', n_folds=n_folds)
     else:
-        df = group_kfold_split(df=df, group_col='Cluster', n_folds=n_folds)
+        df = group_kfold_split(df=df, cluster_col='Cluster', n_folds=n_folds)
 
     fold_sizes = df['Fold'].value_counts(name='Size')['Size'].to_numpy()
 
     if not are_folds_balanced(fold_sizes, tolerance=tolerance):
-        raise RuntimeWarning(f'Prepared folds are not balanced at < {tolerance} > level.')
+        raise RuntimeError(f'Folds are not balanced at < {tolerance} > tolerance and < {threshold} > threshold.')
 
     return df
-
 
 
 def collate_strat(df: pl.DataFrame, strat_col: Union[str, List[str]]):
@@ -627,7 +627,7 @@ def collate_strat(df: pl.DataFrame, strat_col: Union[str, List[str]]):
     return df
 
 
-def are_folds_balanced(fold_sizes: np.ndarray, tolerance: float = 0.2):
+def are_folds_balanced(fold_sizes: np.ndarray, tolerance: float = 0.3):
     """
     Verify if fold sizes are balanced based on relative standard deviation.
 
@@ -635,8 +635,8 @@ def are_folds_balanced(fold_sizes: np.ndarray, tolerance: float = 0.2):
     ----------
     fold_sizes: np.ndarray
         A numpy array of integers
-    tolerance: float, default=0.2
-        Maximum acceptable relative standard deviation
+    tolerance: float, default = 0.3
+        Maximum acceptable relative standard deviation between fold sizes.
 
     Returns
     -------
@@ -652,5 +652,3 @@ def are_folds_balanced(fold_sizes: np.ndarray, tolerance: float = 0.2):
 
     rsd = std/mean
     return rsd <= tolerance
-
-

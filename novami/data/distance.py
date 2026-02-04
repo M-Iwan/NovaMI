@@ -152,8 +152,8 @@ def k_neighbors_distance(array_1: np.ndarray, array_2: np.ndarray, metric: str =
         - 'Min': Minimum distance (equivalent to '1_nearest')
         - 'Mean': Average distance to all entries in array_1
         - 'Max': Maximum distance (equivalent to '1_furthest')
-        - '{k}_nearest': Average distance to k nearest neighbors for each k in nearest_k
-        - '{k}_furthest': Average distance to k furthest neighbors for each k in furthest_k
+        - '{k} Nearest': Average distance to k nearest neighbors for each k in nearest_k
+        - '{k} Furthest': Average distance to k furthest neighbors for each k in furthest_k
     """
 
     if not isinstance(array_1, np.ndarray):
@@ -177,7 +177,7 @@ def k_neighbors_distance(array_1: np.ndarray, array_2: np.ndarray, metric: str =
     if not (isinstance(nearest_k, (int, list)) or nearest_k is None):
         raise TypeError(f'Expected nearest_k to be int or list, got {type(nearest_k)} instead.')
     if not (isinstance(furthest_k, (int, list)) or furthest_k is None):
-        raise TypeErrror(f'Expected furthest_k to be int or list, got {type(furthest_k)} instead.')
+        raise TypeError(f'Expected furthest_k to be int or list, got {type(furthest_k)} instead.')
 
     # QoL
     if isinstance(nearest_k, int):
@@ -240,14 +240,14 @@ def k_neighbors_distance(array_1: np.ndarray, array_2: np.ndarray, metric: str =
     # Aggregate all the results, find the averaged k-nearest and k-furthest values
     df = (pl.DataFrame({'Mean': mean_distances})
             .with_columns([
-                pl.Series(f'{k}_nearest', k_smallest_columns(nearest_array, k=k).mean(axis=0))
+                pl.Series(f'{k} Nearest', k_smallest_columns(nearest_array, k=k).mean(axis=0))
                     for k in nearest_k
             ])
             .with_columns([
-                pl.Series(f'{k}_furthest', k_largest_columns(furthest_array, k=k).mean(axis=0))
+                pl.Series(f'{k} Furthest', k_largest_columns(furthest_array, k=k).mean(axis=0))
                     for k in furthest_k
             ])
-            .rename({'1_nearest': 'Min', '1_furthest': 'Max'})
+            .rename({'1 Nearest': 'Min', '1 Furthest': 'Max'})
     )
 
     return df
@@ -325,6 +325,12 @@ def dict_similarity(string: str, target_mapping: dict, method: str = 'fuzzy', th
         A list of up to num_matches tuples, each containing a matching string and its similarity score,
         sorted by similarity in descending order.
     """
+    try:
+        import Levenshtein
+        from rapidfuzz import fuzz
+    except ImportError:
+        raise ImportError("Function < dict_similarity > requires < Levenshtein > and < rapidfuzz > libraries."
+                          "Please install them using < pip install Levenshtein rapidfuzz >")
 
     similarities = []
 

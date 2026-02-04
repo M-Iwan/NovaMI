@@ -1,6 +1,8 @@
+from typing import List
 import colorsys
 
 import matplotlib.pyplot as plt
+from matplotlib import patches
 import numpy as np
 
 
@@ -89,6 +91,22 @@ def five_point_palette(encoding: str = 'hex'):
         raise ValueError(f"Invalid encoding: {encoding}")
 
 
+def six_point_palette(encoding: str = 'hex'):
+    """
+    Teal, Cascade, Cream, Fresh Peaches, Faded Orange, Terracotta
+
+    Parameters
+    ----------
+    encoding
+
+    """
+    if encoding == 'hex':
+        return ['#257180', '#8CABA0', '#F2E5BF', '#F8B888', '#FD8B51', '#CB6040']
+    elif encoding == 'rgb':
+        return [[37, 113, 128], [140, 171, 160], [242, 229, 191], [248,184,136], [253, 139, 81], [203, 96, 64]]
+    else:
+        raise ValueError(f"Invalid encoding: {encoding}")
+
 def display_palette(palette: List[str]):
     """
     Display a palette as a rectangular box with vertical stripes.
@@ -118,7 +136,8 @@ def display_palette(palette: List[str]):
     ax.axis('off')
 
     plt.tight_layout()
-    plt.show()
+
+    return fig
 
 
 def generate_color_variants(hex_color, num_variants=4, step: float = 0.25):
