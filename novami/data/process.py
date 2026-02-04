@@ -24,7 +24,7 @@ def bin_data(data: Iterable[float], n_bins: int = 5):
     -------
     bins: List[int]
     """
-    quantiles = list(np.quantile(data, q=np.linspace(0, 1, n_bins+2)[1:-1]))
+    quantiles = list(np.quantile(data, q=np.linspace(0, 1, n_bins+1)[1:-1]))
 
     def to_bin(value: float, qnts: List[float]):
         for idx, quantile in enumerate(qnts):
