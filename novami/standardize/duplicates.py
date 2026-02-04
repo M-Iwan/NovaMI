@@ -2,7 +2,7 @@ from typing import Iterable
 from copy import deepcopy
 
 import numpy as np
-
+import polars as pl
 
 def mad_duplicates(df: pl.DataFrame, smiles_col: str = 'SMILES', value_col: str = 'pIC50', threshold: float = 1.0):
     """
@@ -58,7 +58,7 @@ def mad_duplicates(df: pl.DataFrame, smiles_col: str = 'SMILES', value_col: str 
             else:
                 break
 
-        return sub_df_.with_columns(pl.lit(None).alias(value_col))
+        return sdf.with_columns(pl.lit(None).alias(value_col))
 
     int_df = deepcopy(df)
     df = int_df.select([smiles_col, value_col])
