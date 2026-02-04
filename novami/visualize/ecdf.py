@@ -5,7 +5,7 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 
 from novami.visualize.utils import *
-from novami.data.similarity import k_neighbors_distance
+from novami.data.distance import k_neighbors_distance
 
 
 def k_neighbours_ecdf(train_df: pl.DataFrame, test_df: pl.DataFrame, embedding_col: str, metric: str,
@@ -26,14 +26,14 @@ def k_neighbours_ecdf(train_df: pl.DataFrame, test_df: pl.DataFrame, embedding_c
     hue_order = []
 
     if nearest_k is not None:
-        min_colours = generate_color_variants(min_col, len(nearest_k))
+        min_colours = generate_color_variants(min_col, len(nearest_k), step=0.1)
         for k, colour in zip(sorted(nearest_k), min_colours):
             if k == 1:
                 palette['Min'] = colour
                 hue_order.append('Min')
             else:
-                palette[f'{k}_nearest'] = colour
-                hue_order.append(f'{k}_nearest')
+                palette[f'{k} Nearest'] = colour
+                hue_order.append(f'{k} Nearest')
     else:
         palette['Min'] = min_col
         hue_order.append('Min')
@@ -47,8 +47,8 @@ def k_neighbours_ecdf(train_df: pl.DataFrame, test_df: pl.DataFrame, embedding_c
                 palette['Max'] = colour
                 hue_order.append('Max')
             else:
-                palette[f'{k}_furthest'] = colour
-                hue_order.append(f'{k}_furthest')
+                palette[f'{k} Furthest'] = colour
+                hue_order.append(f'{k} Furthest')
     else:
         palette['Max'] = max_col
         hue_order.append('Max')
@@ -71,6 +71,7 @@ def k_neighbours_ecdf(train_df: pl.DataFrame, test_df: pl.DataFrame, embedding_c
 
     g = sns.ecdfplot(data=neighbor_df, x='Distance', hue='Aggregation', palette=palette, hue_order=hue_order)
 
+    g.set_xlabel(f"{metric.capitalize()} Distance")
     g.set_ylabel('Cumulative Probability')
 
     if save_path is not None:
