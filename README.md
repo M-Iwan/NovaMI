@@ -8,7 +8,7 @@ Primarily for personal use: function signatures and repository structure may cha
 For convenience, .py files that work and are up-to-date are marked with *, while those unlikely to work (and should be removed) with #. If no symbol is given, the code should work, but won't be compatibile with the rest of the repository.
 
 ### Repository Structure
-Last updated on version: 0.3.0
+Last updated on version: 0.3.1
 
 ```
 novami/
@@ -34,7 +34,6 @@ novami/
 │   │   ├── manager.py*   Main class for managing data during training and inference
 │   │   ├── manipulate.py*   Helper functions for checks/data manipulation  
 │   │   ├── partition.py*   Partitioning algoriths; convenience wrappers around scikit-learn and cluster.py
-│   │   ├── process.py#   Old code to be merged with manipulate or remove
 │   │   ├── similarity.py*   Parallel distance matrix / k-neighbors calculations
 │   │   └── transform.py*   Main class for normalizing/processing data before training
 │   ├── deep/  When I was writing this code, me and God knew how it worked, guess who doesn't anymore?
@@ -49,6 +48,7 @@ novami/
 │   ├── metrics/
 │   │   └── modellability.py*   MODI index
 │   ├── ml/
+│   │   ├── augood.py*   AU-GOOD framework for model's performance evaluation
 │   │   ├── evaluate.py#   Old code for model/ensemble evaluation
 │   │   ├── models.py*   Self-contained, sklearn-compatibile models and ensembles; I'm very happy with this one :)
 │   │   ├── optimize.py*   Hyperparameter optimization; functions at the top of the file are outdated
@@ -70,11 +70,10 @@ novami/
 │       ├── embedding.py*   t-SNE and UMAP
 │       ├── performance.py   WIP: AU-GOOD framework-related plots
 │       ├── predictions.py*   Bunch of plots for assessing model performance; currently only Regression
-│       ├── proeprties.py*   Plot and compare molecular properties between datasets
+│       ├── properties.py*   Plot and compare molecular properties between datasets
 │       └── utils.py*   Helper functions and my custom palette
 ├── projects/
 │   ├── cddd_setup*   Files for setting up CDDD environment anywhere
-│   ├── drid   VERY OLD code for the CARBIDE project (https://github.com/M-Iwan/CARBIDE)
 │   ├── osmordred_setup   WIP: Corrected Mordred descriptors
 │   └── qcg_template*   Template for QCG PilotJob training on bigger scale (one node)
 ├── temp/   Storage for temporary files
@@ -86,8 +85,3 @@ novami/
 ├── README.md   This file!
 └── setup.py   Most of required libraries, some day I *might* add specific versions.
 ```
-
-### Changelog
-
-#### [0.3.0]: 29-01-2026
-Public release of repository.
