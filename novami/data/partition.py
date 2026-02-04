@@ -7,7 +7,7 @@ import polars as pl
 
 from sklearn.model_selection import KFold, StratifiedKFold, GroupKFold, StratifiedGroupKFold
 
-from novami.data.process import bin_data
+from novami.data.manipulate import bin_data
 from novami.data.cluster import butina_cluster, murcko_cluster, cc_cluster
 
 
