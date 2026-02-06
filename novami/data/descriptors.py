@@ -610,7 +610,7 @@ def dataframe_2_cddd(df: Union[pd.DataFrame, pl.DataFrame], cddd_paths: str, smi
 
     os.system(command)
 
-    df = pickle.load(open(paths['output'], 'rb'))
+    df = joblib.load(paths['output'])
     df.loc[:, descriptor_col] = df[descriptor_col].apply(postprocess, decimals_=decimals)
 
     if is_polars:

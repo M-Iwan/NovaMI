@@ -12,7 +12,7 @@ fi
 CDDD_DIR=$(pwd)
 IO_PATH="${CDDD_DIR}/files"
 INPUT="${IO_PATH}/cddd_input.tsv"
-OUTPUT="${IO_PATH}/cddd_output.pkl"
+OUTPUT="${IO_PATH}/cddd_output.joblib"
 PYTHON=$(which python)
 WRAPPER="${IO_PATH}/CDDD_wrapper.py"
 MODEL_DIR="${CDDD_DIR}/default_model"
