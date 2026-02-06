@@ -1,30 +1,31 @@
 import json
 import os
 import pickle
-import requests
-from typing import Union, List, Dict
+import joblib
+from typing import Union, List
+from importlib.resources import files
 
 import numpy as np
 import pandas as pd
 import polars as pl
 from rdkit import Chem
-from rdkit.Chem import rdMolDescriptors, Descriptors, rdFingerprintGenerator
+from rdkit.Chem import rdMolDescriptors, Descriptors, rdFingerprintGenerator, RDKFingerprint
 
 import torch
 
 from novami.io.file import read_pd, write_pd
 
 
-def smiles_2_morgan(smiles: Union[str, List[str]], radius: int = 2, nbits: int = 1024, dense: bool = True, mfpgen=None):
+def smiles_2_ecfp(smiles: Union[str, List[str]], radius: int = 2, nbits: int = 1024, dense: bool = True, mfpgen=None):
     """
     Parameters
     ----------
     smiles: Union[str, List[str]]
         A valid SMILES or list of valid SMILES strings.
     radius: int, optional
-        The radius parameter for Morgan FP calculation. Default is 2.
+        The radius parameter for ECFP calculation. Default is 2.
     nbits: int, optional
-        The length of the FP. Default is .
+        The length of the FP. Default is 1024.
     dense: bool, optional
         If True, return a dense representation of FP. Default is True.
     mfpgen: rdkit.Chem.rdFingerprintGenerator.FingeprintGenerator64, optional
@@ -56,17 +57,17 @@ def smiles_2_morgan(smiles: Union[str, List[str]], radius: int = 2, nbits: int =
     if isinstance(smiles, str):
         return get_embedding(smiles)
 
-    if isinstance(smiles, list) & all(isinstance(smi, str) for smi in smiles):
+    if isinstance(smiles, list) and all(isinstance(smi, str) for smi in smiles):
         return [get_embedding(smi) for smi in smiles]
 
     print(f'Expected < smiles > to be str or list, received < {type(smiles)} > instead')
     return np.nan
 
 
-def dataframe_2_morgan(df: Union[pd.DataFrame, pl.DataFrame], smiles_col: str = 'SMILES', descriptor_col: str = 'Morgan',
-                       radius: int = 2, nbits: int = 1024, dense: bool = True):
+def dataframe_2_ecfp(df: Union[pd.DataFrame, pl.DataFrame], smiles_col: str = 'SMILES', descriptor_col: str = 'ECFP',
+                     radius: int = 2, nbits: int = 1024, dense: bool = True):
     """
-    Convert SMILES in a DataFrame to Morgan fingerprints.
+    Convert SMILES in a DataFrame to ECFP.
 
     Parameters
     ----------
@@ -77,7 +78,7 @@ def dataframe_2_morgan(df: Union[pd.DataFrame, pl.DataFrame], smiles_col: str = 
     descriptor_col : str, optional
         Name of column to which add calculated descriptors.
     radius: int, optional
-        The radius parameter for Morgan FP calculation. Default is 2.
+        The radius parameter for ECFP calculation. Default is 2.
     nbits: int, optional
         The length of the FP. Default is 1024.
     dense: bool, optional
@@ -86,18 +87,104 @@ def dataframe_2_morgan(df: Union[pd.DataFrame, pl.DataFrame], smiles_col: str = 
     Returns
     -------
     df : pd.DataFrame, pl.DataFrame
-        A pandas/polars Dataframe with added Morgan fingerprints.
+        A pandas/polars Dataframe with added ECFP.
         If 'dense' is set to False, returns a numpy array with indices of non-zero elements.
     """
 
     mfpgen = rdFingerprintGenerator.GetMorganGenerator(radius=radius, fpSize=nbits)
 
     if isinstance(df, pd.DataFrame):
-        df[descriptor_col] = smiles_2_morgan(df[smiles_col].tolist(), radius=radius, nbits=nbits, dense=dense, mfpgen=mfpgen)
+        df[descriptor_col] = smiles_2_ecfp(df[smiles_col].tolist(), radius=radius, nbits=nbits, dense=dense, mfpgen=mfpgen)
         return df
     elif isinstance(df, pl.DataFrame):
-        df = df.with_columns(pl.Series(descriptor_col, smiles_2_morgan(df[smiles_col].to_list(),
-                                       radius=radius, nbits=nbits, dense=dense, mfpgen=mfpgen)))
+        df = df.with_columns(pl.Series(descriptor_col, smiles_2_ecfp(df[smiles_col].to_list(),
+                                                                     radius=radius, nbits=nbits, dense=dense, mfpgen=mfpgen)))
+        return df
+    else:
+        raise TypeError(f"Expected df to be either polars or pandas DataFrame, got {type(df)} instead.")
+
+
+def smiles_2_daylight(smiles: Union[str, List[str]], minpath: int = 1, maxpath: int = 7, nbits: int = 1024,
+                      dense: bool = True):
+    """
+    Parameters
+    ----------
+    smiles: Union[str, List[str]]
+        A valid SMILES or list of valid SMILES strings.
+    minpath: int
+        Smallest path length to consider. Default is 1.
+    maxpath: int
+        Biggest path length to consider. Default is 7.
+    nbits: int, optional
+        The length of the FP. Default is 1024.
+    dense: bool, optional
+        If True, return a dense representation of FP. Default is True.
+
+    Returns
+    -------
+    array: Union[np.ndarray, List[np.ndarray]]
+        A np.ndarray or list of np.ndarrays.
+    """
+
+    def get_embedding(smi: str):
+        try:
+            if (mol := Chem.MolFromSmiles(smi)) is None:
+                print(f'Unable to construct a valid molecule from < {smi} >')
+                return np.nan
+
+            fp = np.array(RDKFingerprint(mol, minPath=minpath, maxPath=maxpath, fpSize=nbits), dtype=np.uint8)
+
+            return fp if dense else fp.nonzero()[0]
+
+        except Exception as e:
+            print(f'Unable to process < {smi} > due to: \n{e}')
+            return np.nan
+
+    if isinstance(smiles, str):
+        return get_embedding(smiles)
+
+    if isinstance(smiles, list) and all(isinstance(smi, str) for smi in smiles):
+        return [get_embedding(smi) for smi in smiles]
+
+    print(f'Expected < smiles > to be str or list, received < {type(smiles)} > instead')
+    return np.nan
+
+
+def dataframe_2_daylight(df: Union[pd.DataFrame, pl.DataFrame], smiles_col: str = 'SMILES', descriptor_col: str = 'Daylight',
+                         minpath: int = 1, maxpath: int = 7, nbits: int = 1024, dense: bool = True):
+    """
+    Convert SMILES in a DataFrame to Daylight-like descriptors.
+
+    Parameters
+    ----------
+    df : Union[pd.DataFrame, pl.DataFrame]
+        A pandas/polars DataFrame with data.
+    smiles_col : str, optional
+        Name of column with SMILES.
+    descriptor_col : str, optional
+        Name of column to which add calculated descriptors.
+    minpath: int
+        Smallest path length to consider. Default is 1.
+    maxpath: int
+        Biggest path length to consider. Default is 7.
+    nbits: int, optional
+        The length of the FP. Default is 1024.
+    dense: bool, optional
+        If True, return a dense representation of FP. Default is True.
+
+    Returns
+    -------
+    df : pd.DataFrame, pl.DataFrame
+        A pandas/polars Dataframe with added Daylight fingerprints .
+        If 'dense' is set to False, returns a numpy array with indices of non-zero elements.
+    """
+
+    if isinstance(df, pd.DataFrame):
+        df[descriptor_col] = smiles_2_daylight(df[smiles_col].tolist(), minpath=minpath, maxpath=maxpath, nbits=nbits, dense=dense)
+        return df
+    elif isinstance(df, pl.DataFrame):
+        df = df.with_columns(pl.Series(descriptor_col, smiles_2_daylight(df[smiles_col].to_list(),
+                                                        minpath=minpath, maxpath=maxpath, nbits=nbits, dense=dense)))
         return df
     else:
         raise TypeError(f"Expected df to be either polars or pandas DataFrame, got {type(df)} instead.")
@@ -135,7 +222,7 @@ def smiles_2_maccs(smiles: Union[str, List[str]], dense: bool = True):
     if isinstance(smiles, str):
         return get_embedding(smiles)
 
-    if isinstance(smiles, list) & all(isinstance(smi, str) for smi in smiles):
+    if isinstance(smiles, list) and all(isinstance(smi, str) for smi in smiles):
         return [get_embedding(smi) for smi in smiles]
 
     print(f'Expected < smiles > to be str or list, received < {type(smiles)} > instead')
@@ -175,8 +262,7 @@ def dataframe_2_maccs(df: Union[pd.DataFrame, pl.DataFrame], smiles_col: str = '
         raise TypeError(f"Expected df to be either polars or pandas DataFrame, got {type(df)} instead.")
 
 
-def smiles_2_klek(smiles: Union[str, List[str]], dense: bool = True, klek_mols: List = None,
-                  source: str = 'src/src_files/klek.pkl'):
+def smiles_2_klek(smiles: Union[str, List[str]], dense: bool = True, klek_mols: List = None):
     """
     Parameters
     ----------
@@ -186,9 +272,7 @@ def smiles_2_klek(smiles: Union[str, List[str]], dense: bool = True, klek_mols: 
         If True, return a dense representation of FP. Default is True.
     klek_mols: List
         A list of RDKit molecules from Klekota&Roth SMARTS definitions.
-        If not passed, they are read from source parameter.
-    source: str
-        A path to pickled List of klek_mols
+        If not passed, they are read from included resources.
 
     Returns
     -------
@@ -197,7 +281,8 @@ def smiles_2_klek(smiles: Union[str, List[str]], dense: bool = True, klek_mols: 
     """
 
     if klek_mols is None:
-        klek_mols = pickle.load(open(source, 'rb'))
+        data_file = files('novami.files').joinpath('klekota_roth.joblib')
+        klek_mols = joblib.load(data_file)
 
     def get_embedding(smi: str, kmols: List):
         try:
@@ -216,7 +301,7 @@ def smiles_2_klek(smiles: Union[str, List[str]], dense: bool = True, klek_mols: 
     if isinstance(smiles, str):
         return get_embedding(smiles, klek_mols)
 
-    if isinstance(smiles, list) & all(isinstance(smi, str) for smi in smiles):
+    if isinstance(smiles, list) and all(isinstance(smi, str) for smi in smiles):
         return [get_embedding(smi, klek_mols) for smi in smiles]
 
     print(f'Expected < smiles > to be str or list, received < {type(smiles)} > instead')
@@ -224,7 +309,7 @@ def smiles_2_klek(smiles: Union[str, List[str]], dense: bool = True, klek_mols: 
 
 
 def dataframe_2_klek(df: Union[pd.DataFrame, pl.DataFrame], smiles_col: str = 'SMILES', descriptor_col: str = 'Klek',
-                     dense: bool = True, source: str = 'src/src_files/klek.pkl'):
+                     dense: bool = True):
     """
     Convert SMILES in dataframe to Klekota&Roth fingerprints.
 
@@ -238,8 +323,6 @@ def dataframe_2_klek(df: Union[pd.DataFrame, pl.DataFrame], smiles_col: str = 'S
         Name of column to which add calculated descriptors.
     dense: bool, optional
         If True, return a dense representation of FP. Default is True.
-    source: str
-        A path to pickled List of RDKit molecules generated from Klekota&Roth SMARTS.
 
     Returns
     -------
@@ -248,13 +331,14 @@ def dataframe_2_klek(df: Union[pd.DataFrame, pl.DataFrame], smiles_col: str = 'S
         If 'dense' is set to False, returns a numpy array with indices of non-zero elements.
     """
 
-    klek_mols = pickle.load(open(source, 'rb'))
+    data_file = files('novami.files').joinpath('klekota_roth.joblib')
+    klek_mols = joblib.load(data_file)
 
     if isinstance(df, pd.DataFrame):
         df[descriptor_col] = smiles_2_klek(df[smiles_col].tolist(), dense=dense, klek_mols=klek_mols)
         return df
     elif isinstance(df, pl.DataFrame):
-        df = df.with_columns(pl.Series(descriptor_col, smiles_2_klek(df[smiles_col].to_list(), dense=dense)))
+        df = df.with_columns(pl.Series(descriptor_col, smiles_2_klek(df[smiles_col].to_list(), dense=dense, klek_mols=klek_mols)))
         return df
     else:
         raise TypeError(f"Expected df to be either polars or pandas DataFrame, got {type(df)} instead.")
@@ -291,7 +375,7 @@ def smiles_2_rdkit(smiles: Union[str, List[str]], decimals: int = 5):
     if isinstance(smiles, str):
         return get_embedding(smiles)
 
-    if isinstance(smiles, list) & all(isinstance(smi, str) for smi in smiles):
+    if isinstance(smiles, list) and all(isinstance(smi, str) for smi in smiles):
         return [get_embedding(smi) for smi in smiles]
 
     print(f'Expected < smiles > to be str or list, received < {type(smiles)} > instead')
@@ -372,7 +456,7 @@ def smiles_2_chemberta(smiles: Union[str, List[str]], decimals: int = 5):
     if isinstance(smiles, str):
         return get_embeddings(smiles)
 
-    if isinstance(smiles, list) & all(isinstance(smi, str) for smi in smiles):
+    if isinstance(smiles, list) and all(isinstance(smi, str) for smi in smiles):
         return [get_embeddings(smi) for smi in smiles]
 
     print(f'Expected < smiles > to be str or list, received < {type(smiles)} > instead')
@@ -419,6 +503,7 @@ def dataframe_2_mordred(df: Union[pd.DataFrame, pl.DataFrame], smiles_col: str =
                         path_source: str = f'src/src_files/mordred_paths.json', decimals: int = 5):
     """
     Convert SMILES in dataframe to Mordred descriptors.
+    TODO: automated setup possibility
 
     Parameters
     ----------
@@ -477,6 +562,7 @@ def dataframe_2_cddd(df: Union[pd.DataFrame, pl.DataFrame], cddd_paths: str, smi
                      descriptor_col: str = 'CDDD', n_cpus: int = 4, decimals: int = 5):
     """
     Convert SMILES in a DataFrame to CDDD descriptors.
+    TODO: automated setup possibility
 
     Parameters
     ----------
@@ -571,7 +657,7 @@ def smiles_2_mapc(smiles: Union[str, List[str]], radius: int = 2, nbits: int = 1
     if isinstance(smiles, str):
         return get_embedding(smiles)
 
-    if isinstance(smiles, list) & all(isinstance(smi, str) for smi in smiles):
+    if isinstance(smiles, list) and all(isinstance(smi, str) for smi in smiles):
         return [get_embedding(smi) for smi in smiles]
 
     print(f'Expected < smiles > to be str or list, received < {type(smiles)} > instead')
@@ -580,7 +666,28 @@ def smiles_2_mapc(smiles: Union[str, List[str]], radius: int = 2, nbits: int = 1
 
 def dataframe_2_mapc(df: Union[pd.DataFrame, pl.DataFrame], smiles_col: str = 'SMILES', descriptor_col: str = 'MAPC',
     radius: int = 2, nbits: int = 1024):
+    """
+    Convert SMILES in a DataFrame to MAPC (MAP Chiral) fingerprints.
 
+    Parameters
+    ----------
+    df : Union[pd.DataFrame, pl.DataFrame]
+        A pandas or polars DataFrame containing molecular data.
+    smiles_col : str, optional
+        Name of the column containing SMILES strings. Default is 'SMILES'.
+    descriptor_col : str, optional
+        Name of the column to store calculated fingerprints. Default is 'MAPC'.
+    radius : int, optional
+        The maximum radius for MAPC calculation. Default is 2.
+    nbits : int, optional
+        The number of permutations (fingerprint length). Default is 1024.
+
+    Returns
+    -------
+    df : Union[pd.DataFrame, pl.DataFrame]
+        The input DataFrame with an added column containing MAPC fingerprints.
+    """
+    
     try:
         from mapchiral.mapchiral import encode
     except ImportError:
