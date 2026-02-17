@@ -251,7 +251,7 @@ def minimal_train_test_split(df: pl.DataFrame, fraction: float, tolerance: float
     n_test = math.ceil(len(df) * fraction)
     top_test = math.ceil(len(df) * (fraction + tolerance))
 
-    clusters = []
+    clusters = []  # These are test clusters
     test_size = 0
 
     for cluster, cluster_size in cluster_counts.iter_rows():
@@ -265,10 +265,11 @@ def minimal_train_test_split(df: pl.DataFrame, fraction: float, tolerance: float
         print('Unable to partition the date with required fraction')
         return None, None
 
-    train_df = df.filter(~pl.col(cluster_col).is_in(clusters))
-    test_df = df.filter(pl.col(cluster_col).is_in(clusters))
+    df = df.with_columns(
+        pl.when(pl.col(cluster_col).is_in(clusters)).then(pl.lit("Test")).otherwise(pl.lit("Train")).alias("Set")
+    )
 
-    return train_df, test_df
+    return df
 
 
 def random_kfold_split(df: pl.DataFrame, n_folds: int = 5, seed: int = 42):
