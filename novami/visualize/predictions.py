@@ -104,10 +104,11 @@ class ClassifierAnalyzer(Analyzer):
 
 class RegressorAnalyzer(Analyzer):
     def __init__(self, model: Union[Unit, Ensemble], df: pl.DataFrame, features_col: str, target_col: str,
-                 fold_col: str, test_fold: int, weights_col: Optional[str] = None, groups_col: Optional[str] = None):
+                 fold_col: str, test_fold: int, weights_col: Optional[str] = None, groups_col: Optional[str] = None,
+                 save_directory: Optional[str] = None):
 
-        super().__init__(model=model, df=df, features_col=features_col, target_col=target_col,
-                         fold_col=fold_col, test_fold=test_fold, weights_col=weights_col, groups_col=groups_col)
+        super().__init__(model=model, df=df, features_col=features_col, target_col=target_col, fold_col=fold_col,
+                         test_fold=test_fold, weights_col=weights_col, groups_col=groups_col, save_directory=save_directory)
 
     def predicted_vs_observed(self, name: Optional[str] = None, plot_kwargs: Optional[dict] = None):
         """
