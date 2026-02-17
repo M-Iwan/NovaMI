@@ -167,3 +167,127 @@ class DatasetManager:
 
     def get_test_smiles(self):
         return self.s_array[self.test_idxs]
+
+
+class TrainTestManager:
+    """
+    Manages data based on train/test splits.
+
+    Parameters
+    ----------
+    df : pl.DataFrame
+        Polars DataFrame containing feature data, target values, and set assignments.
+    smiles_col : str
+        Name of the column containing SMILES strings.
+    features_col : str
+        Name of the column containing features.
+    target_col : str
+        Name of the column containing target values.
+    set_col : str
+        Name of the column containing set assignments.
+    weights_col : str or None
+        Name of the column containing sample weights, if provided.
+    groups_col : str or None
+        Name of the column containing groups, if provided.
+
+
+    Attributes
+    ----------
+    df : pl.DataFrame
+        Polars DataFrame containing feature data, target values, and set assignments.
+    smiles_col : str
+        Name of the column containing SMILES strings.
+    features_col : str
+        Name of the column containing features.
+    target_col : str
+        Name of the column containing target values.
+    set_col : str
+        Name of the column containing set assignments.
+    weights_col : str or None
+        Name of the column containing sample weights, if provided.
+    groups_col : str or None
+        Name of the column containing groups, if provided.
+
+    x_array : numpy.ndarray
+        2D array of feature values extracted from the DataFrame.
+    y_true : numpy.ndarray
+        1D array of target values extracted from the DataFrame.
+    w_array : numpy.ndarray
+        1D array of sample weights (ones if weights_col is None).
+    g_array : numpy.ndarray
+        1D array of group assignments.
+    s_array : numpy.ndarray
+        1D array of SMILES strings.
+    train_idxs : dict
+        Row indices for train samples
+    test_idxs: np.ndarray
+        Row indices for test samples.
+
+    Methods
+    -------
+    get_train_data()
+        Get training data (features, targets, weights) for the training set.
+    get_test_data()
+        Get testing data (features, targets, weights, groups) for the test set.
+    """
+    def __init__(self, df: pl.DataFrame, smiles_col: str, features_col: str, target_col: str, set_col: str,
+                 weights_col: Optional[str] = None, groups_col: Optional[str] = None):
+
+        required_cols = [smiles_col, features_col, target_col]
+        if weights_col is not None:
+            required_cols.append(weights_col)
+        if groups_col is not None:
+            required_cols.append(groups_col)
+
+        missing_cols = [col for col in required_cols if col not in df.columns]
+        if missing_cols:
+            raise KeyError(f'Missing column(s) in DataFrame: {missing_cols}')
+
+        self.df = pl.from_pandas(df) if isinstance(df, pd.DataFrame) else df
+
+        self.smiles_col = smiles_col
+        self.features_col = features_col
+        self.target_col = target_col
+        self.set_col = set_col
+        self.weights_col = weights_col
+        self.groups_col = groups_col
+
+        self.x_array = np.vstack(self.df[self.features_col].to_numpy())  # 2D numpy array
+        self.y_true = self.df[self.target_col].to_numpy()  # 1D numpy array
+        self.s_array = self.df[self.smiles_col].to_numpy() # 1D numpy array
+
+        if self.weights_col is not None:
+            self.w_array = self.df[self.weights_col].to_numpy() # 1D numpy array
+        else:
+            self.w_array = None
+
+        if self.groups_col is not None:
+            self.g_array = self.df[self.groups_col].to_numpy() # 1D numpy array of whatever
+        else:
+            self.g_array = None
+
+        self.splits = self.df[self.set_col].to_numpy()
+        self.train_idxs = np.where(self.splits == "Train")[0]
+        self.test_idxs = np.where(self.splits == "Test")[0]
+
+    def get_train_data(self) -> Dict[str, np.ndarray]:
+        return {
+            'x_array': self.x_array[self.train_idxs, :],
+            'y_true': self.y_true[self.train_idxs],
+            'sample_weight': self.w_array[self.train_idxs] if self.w_array is not None else None,
+            'groups': self.g_array[self.train_idxs] if self.g_array is not None else None
+        }
+
+    def get_test_data(self) -> Dict[str, np.ndarray]:
+        return {
+            'x_array': self.x_array[self.test_idxs, :],
+            'y_true': self.y_true[self.test_idxs],
+            'sample_weight': self.w_array[self.test_idxs] if self.w_array is not None else None,
+            'groups': self.g_array[self.test_idxs] if self.g_array is not None else None
+        }
+
+    def get_train_smiles(self):
+        return self.s_array[self.train_idxs]
+
+    def get_test_smiles(self):
+        return self.s_array[self.test_idxs]
