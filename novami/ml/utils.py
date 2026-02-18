@@ -1,10 +1,16 @@
 import importlib
 import inspect
+import datetime
 from typing import Dict
 
 from novami.data.transform import DataTransformer, get_transformer_params
 from novami.ml.params import *
 from novami.ml.models import RegressorUnit, ClassifierUnit
+
+
+def log(message: str):
+    log_time = str(datetime.datetime.now()).split('.')[0]
+    print(f'{log_time}: {message}')
 
 
 def prepare_unit(model_name: str, model_params: Dict, features: str, task: str, n_jobs: int):
