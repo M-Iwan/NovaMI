@@ -5,28 +5,28 @@ import pandas as pd
 import polars as pl
 
 
-class DatasetManager:
+class KFoldManager:
     """
     Manages splitting data based on pre-defined folds.
 
     Parameters
     ----------
     df : pl.DataFrame
-        Polars DataFrame containing feature data, target values, and fold assignments.
-        Pandas DataFrames are automatically converted to Polars.
-    smiles_col: str
-        Column name in `df` containing SMILES strings.
+        The stored DataFrame containing all data.
+    smiles_col : str
+        Name of the column containing SMILES strings.
     features_col : str
-        Column name in `df` containing the feature arrays. Expected to contain
-        data that can be converted to a 2D numpy array.
+        Name of the column containing features.
     target_col : str
-        Column name in `df` containing the target values. Expected to contain
-        data that can be converted to a 1D numpy array.
-    weights_col : str, optional
-        Column name in `df` containing sample weights. If None, equal weights
-        are assigned to all samples. Defaults to None
-    fold_col : str, optional
-        Column name in `df` containing fold assignments. Defaults to 'Fold'.
+        Name of the column containing target values.
+    fold_col : str
+        Name of the column containing fold assignments.
+    test_fold : int
+        Fold to be used for testing.
+    weights_col : str or None
+        Name of the column containing sample weights, if provided.
+    groups_col : str or None
+        Name of the column containing groups, if provided.
 
     Attributes
     ----------
@@ -67,6 +67,8 @@ class DatasetManager:
         Dictionary mapping each fold to indices for evaluation data (samples in that fold).
     test_idxs: np.ndarray
         Row indices for test samples.
+    non_test_idxs: np.ndarray
+        Row indices for non-test samples.
 
     Methods
     -------
@@ -76,9 +78,11 @@ class DatasetManager:
         Get evaluation data (features, targets, weights, groups) for the specified fold.
     get_test_data()
         Get testing data (features, targets, weights, groups) for the test fold.
+    get_non_test_data()
+        Get non-test data (features, targets, weights).
     """
-    def __init__(self, df: pl.DataFrame, smiles_col: str, features_col: str, target_col: str, fold_col: str,
-                 test_fold: int, weights_col: Optional[str] = None, groups_col: Optional[str] = None):
+    def __init__(self, df: pl.DataFrame, smiles_col: str, features_col: str, target_col: str, fold_col: str, test_fold: int,
+                 weights_col: Optional[str] = None, groups_col: Optional[str] = None):
 
         required_cols = [smiles_col, features_col, target_col, fold_col]
         if weights_col is not None:
@@ -121,6 +125,7 @@ class DatasetManager:
         self.train_idxs = {fold: np.where((self.splits != fold) & (self.splits != self.test_fold))[0] for fold in self.folds}
         self.eval_idxs = {fold: np.where(self.splits == fold)[0] for fold in self.folds}
         self.test_idxs = np.where(self.splits == self.test_fold)[0]
+        self.non_test_idxs = np.where(self.splits != self.test_fold)[0]
 
     def get_train_data(self, fold: int) -> Dict[str, np.ndarray]:
         if fold == self.test_fold:
@@ -159,6 +164,14 @@ class DatasetManager:
             'groups': self.g_array[self.test_idxs] if self.g_array is not None else None
         }
 
+    def get_non_test_data(self) -> Dict[str, np.ndarray]:
+        return {
+            'x_array': self.x_array[self.non_test_idxs, :],
+            'y_true': self.y_true[self.non_test_idxs],
+            'sample_weight': self.w_array[self.non_test_idxs] if self.w_array is not None else None,
+            'groups': self.g_array[self.non_test_idxs] if self.g_array is not None else None
+        }
+
     def get_train_smiles(self, fold: int):
         return self.s_array[self.train_idxs[fold]]
 
@@ -168,10 +181,13 @@ class DatasetManager:
     def get_test_smiles(self):
         return self.s_array[self.test_idxs]
 
+    def get_non_test_smiles(self):
+        return self.s_array[self.non_test_idxs]
 
-class TrainTestManager:
+
+class TTManager:
     """
-    Manages data based on train/test splits.
+    TrainTestManager for data manipulation based on train/test splits.
 
     Parameters
     ----------
