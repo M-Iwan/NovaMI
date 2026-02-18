@@ -262,7 +262,7 @@ def minimal_train_test_split(df: pl.DataFrame, fraction: float, tolerance: float
             break
 
     if test_size > top_test:
-        print('Unable to partition the date with required fraction')
+        print(f'Unable to split data into train and test. Fraction: {fraction}. Tolerance: {tolerance}.')
         return None, None
 
     df = df.with_columns(
@@ -420,8 +420,7 @@ def temporal_split(df: pl.DataFrame, time_col: str, fraction: float = 0.2):
 
     Returns
     --------
-    train_df, test_df: pl.DataFrame, pl.DataFrame
-        Training DataFrame (earlier time points) and testing DataFrame (later time points).
+    df: pl.DataFrame
     """
 
     n_samples = int(round(len(df) * fraction))
@@ -429,10 +428,11 @@ def temporal_split(df: pl.DataFrame, time_col: str, fraction: float = 0.2):
     df = df.sort(by=time_col, descending=True)
     time_value = df[time_col].item(n_samples)
 
-    train_df = df.filter(pl.col(time_col) < time_value)
-    test_df = df.filter(pl.col(time_col) >= time_value)
+    df = df.with_columns(
+        pl.when(pl.col(time_col) < time_value).then(pl.lit("Train")).otherwise(pl.lit("Test")).alias("Set")
+    )
 
-    return train_df, test_df
+    return df
 
 
 def murcko_kfold_split(df: pl.DataFrame, strat_col: Union[str, List[str]] = None, smiles_col: str = 'SMILES',
