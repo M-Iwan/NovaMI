@@ -1,205 +1,151 @@
-import inspect
-import copy
+from copy import deepcopy
 
-import numpy as np
-import pandas as pd
-from sklearn.model_selection import StratifiedKFold
+from novami.data.manager import TTManager, KFoldManager
+from novami.ml.models import *
+from novami.ml.utils import prepare_unit
 
-from novami.ml.score import score_regression_model, score_classification_model
 
-def kf_evaluate(model, df: pd.DataFrame, features_col: str, target_col: str, task: str = 'classification',
-                library: str = 'sklearn', kf_params: dict = None):
+def tt_evaluate(model_name: str, df: pl.DataFrame, smiles_col: str, features_col: str, target_col: str,
+                set_col: str = "Set", weights_col: str = None, groups_col: str = None, n_jobs: int = 1,
+                model_params: dict = None, task:str = 'regression'):
     """
-    model : initialized instance
-    """
+    Evaluate a model using train-test split.
 
-    sc_fs = {
-        'classification': score_classification_model,
-        'regression': score_regression_model
-        }
+    Parameters
+    ----------
+    model_name: str
+        Name of the model to use. Must be included in the novami.ml.utils:get_model function
+    df: pl.DataFrame
+        A Polars DataFrame with features, target values, and column denoting set membership.
+    smiles_col: str
+        A name of a column with SMILES strings.
+    features_col: str
+        A name of a column with feature used for model training.
+    target_col: str
+        A name of a column with target values used for model training.
+    set_col: str
+        A name of a column with set memberships denoting Training/Test.
+    weights_col: str, optional
+        A name of a column with sample weights.
+    groups_col: str, optional
+        A name of a column with group memberships. Each group will be separately scored.
+    n_jobs: int, optional
+        Number of CPUs to use for model training.
+    model_params: dict, optional
+        Hyperparameters to use for model training. If not provided, model defaults are used.
+    task: str, optional
+        Either regression or classification.
 
-    score_function = sc_fs.get(task)
-
-    models = {}
-    scores = {}
-
-    def_params = {'n_splits': 5, 'shuffle': True, 'random_state': np.random.RandomState(0)}
-    if kf_params is not None:
-        def_params.update(kf_params)
-
-    skf = StratifiedKFold(n_splits=def_params['n_splits'], shuffle=def_params['shuffle'],
-                          random_state=def_params['random_state'])
-
-    if library == 'sklearn':
-        x = np.vstack(df[features_col].to_numpy())
-        y = df[target_col].to_numpy()
-
-    elif library == 'torch':
-        raise NotImplementedError
-
-    elif library == 'torch_geometric':
-        x = df[features_col].values
-        y = df[target_col].values
-    else:
-        raise ValueError('Wrong library type')
-
-    for i, (train_index, eval_index) in enumerate(skf.split(x, y)):
-
-        model_ = copy.deepcopy(model)
-        model_.fit(x[train_index], y[train_index])
-
-        y_pred = model_.predict(x[eval_index])
-        score = score_function(y_true=y[eval_index], y_pred=y_pred)
-
-        models[f'model_{i}'] = model_
-        scores[f'model_{i}'] = copy.deepcopy(score)
-
-    return scores, models
-
-
-def fold_evaluate(model, df: pd.DataFrame, features_col: str, target_col: str, fold_col: str, weights_col: str = None,
-                  task: str = 'classification'):
-    """
-    Evaluate model using pre-defined splits.
-    Model must implement .fit and .predict methods and work on numpy ndarrays.
+    Returns
+    -------
+    unit: Unit
+        A trained Unit instance.
     """
 
-    sc_fs = {
-        'classification': score_classification_model,
-        'regression': score_regression_model
-        }
+    if model_params is None:
+        model_params = {}
 
-    score_function = sc_fs.get(task)
+    unit = prepare_unit(
+        model_name=model_name,
+        model_params=model_params,
+        features=features_col,
+        task=task,
+        n_jobs=n_jobs
+    )
 
-    x_values = np.vstack(df[features_col].to_numpy())
-    y_values = np.vstack(df[target_col].to_numpy())
-    splits = np.vstack(df[fold_col].to_numpy())
-    folds = df[fold_col].nunique()
+    manager = TTManager(
+        df=df,
+        smiles_col=smiles_col,
+        features_col=features_col,
+        target_col=target_col,
+        set_col=set_col,
+        weights_col=weights_col,
+        groups_col=groups_col
+    )
 
-    scores = {}
-    models = {}
+    train_data = manager.get_train_data()
+    test_data = manager.get_test_data()
 
-    for i in range(folds):
+    unit.fit(**train_data)
+    unit.metrics['Training'] = unit.score(**train_data)
+    unit.metrics['Testing'] = unit.score(**test_data)
 
-        model_ = copy.deepcopy(model)
-
-        train_idx = np.where(splits != i)[0]
-        eval_idx = np.where(splits == i)[0]
-
-        y_train = y_values[train_idx, :]
-        y_eval = y_values[eval_idx, :]
-
-        if y_train.shape[1] == 1:  # i.e. only one target:
-            y_train = y_train.reshape(-1)
-            y_eval = y_eval.reshape(-1)
-
-        if (weights_col is not None) and ('sample_weight' in inspect.signature(model_.fit).parameters):  # i.e. does model accept weights
-            weights_ = np.vstack(df[weights_col].to_numpy()).reshape(-1)[train_idx]
-            model_.fit(x_values[train_idx, :], y_train, sample_weight=weights_)
-            y_pred = model_.predict(x_values[eval_idx, :])
-            scores[f'model_{i}_w'] = score_function(y_true=y_eval, y_pred=y_pred, sample_weight=weights_)  # log weighted scores
-            scores[f'model_{i}'] = score_function(y_true=y_eval, y_pred=y_pred)  # log un-weighted scores
-
-        else:
-            model_.fit(x_values[train_idx, :], y_train)
-            y_pred = model_.predict(x_values[eval_idx, :])
-            scores[f'model_{i}'] = score_function(y_true=y_eval, y_pred=y_pred)
-
-        models[f'model_{i}'] = model_
-
-    return scores, models
+    return unit
 
 
-def bootstrap_evaluate(model, df: pd.DataFrame, features_col: str, target_col: str, task: str = 'classification',
-                       library: str = 'sklearn', bs_params: dict = None):
+def kf_evaluate(model_name: str, df: pl.DataFrame, smiles_col: str, features_col: str, target_col: str,
+                fold_col: str = "Fold", weights_col: str = None, groups_col: str = None, n_jobs: int = 1,
+                model_params: dict = None, task: str = 'regression'):
     """
-    model : initialized instance of model following sklearn API
-    Does not support sample_weights
-    """
+    Evaluate a model using KFold split.
 
-    models = dict()
-    scores = dict()
+    Parameters
+    ----------
+    model_name: str
+        Name of the model to use. Must be included in the novami.ml.utils:get_model function
+    df: pl.DataFrame
+        A Polars DataFrame with features, target values, and column denoting set membership.
+    smiles_col: str
+        A name of a column with SMILES strings.
+    features_col: str
+        A name of a column with feature used for model training.
+    target_col: str
+        A name of a column with target values used for model training.
+    fold_col: str
+        A name of a column with fold memberships.
+    weights_col: str, optional
+        A name of a column with sample weights.
+    groups_col: str, optional
+        A name of a column with group memberships. Each group will be separately scored.
+    n_jobs: int, optional
+        Number of CPUs to use for model training.
+    model_params: dict, optional
+        Hyperparameters to use for model training. If not provided, model defaults are used.
+    task: str, optional
+        Either regression or classification.
 
-    def_params = {'frac': 0.8, 'replace': True, 'random_state': np.random.RandomState(0), 'n_iter': 5}
-    if bs_params is not None:
-        def_params.update(bs_params)
-
-    for i in range(def_params['n_iter']):
-
-        df_train = df.sample(frac=def_params['frac'], replace=def_params['replace'], random_state=def_params['random_state'])
-        df_eval = df[~df.index.isin(df_train.index)]
-
-        y_train = df_train[target_col].to_numpy()
-        y_eval = df_eval[target_col].to_numpy()
-
-        if library == 'sklearn':
-            x_train = np.vstack(df_train[features_col].to_numpy())
-            x_eval = np.vstack(df_eval[features_col].to_numpy())
-
-        elif library == 'torch':
-            raise NotImplementedError
-
-        elif library == 'torch_geometric':
-            x_train = df_train[features_col].values  # should take the 'SMILES' column, as models have built-in vectorizer
-            x_eval = df_eval[features_col].values
-
-        else:
-            raise ValueError('Wrong library')
-
-        model_ = copy.deepcopy(model)
-        model_.fit(x_train, y_train)
-
-        if task == 'regression':
-            score = score_regression_model(model_, x_eval, y_eval)
-        elif task == 'classification':
-            score = score_classification_model(model_, x_eval, y_eval)
-        else:
-            raise ValueError("Allowed options for < task > are: regression, classification")
-
-        models[f'model_{i+1}'] = model_
-        scores[f'model_{i+1}'] = copy.deepcopy(score)
-
-    return scores, models
-
-
-def test_evaluate(model, df: pd.DataFrame, features_col: str, target_col: str, task: str = 'classification',
-                  library: str = 'sklearn', split_column: str = 'Dataset'):
-    """
-    The passed df is expected to have 'train'/'test' values in split_column argument
-    Does not support sample_weights.
+    Returns
+    -------
+    ensemble: Ensemble
+        A trained Ensemble instance.
     """
 
-    df_train = df[df[split_column] == 'train']
-    df_test = df[df[split_column] == 'test']
+    if model_params is None:
+        model_params = {}
 
-    y_train = df_train[target_col].to_numpy()
-    y_test = df_test[target_col].to_numpy()
+    unit = prepare_unit(
+        model_name=model_name,
+        model_params=model_params,
+        features=features_col,
+        task=task,
+        n_jobs=n_jobs
+    )
 
-    if library == 'sklearn':
-        x_train = np.vstack(df_train[features_col].to_numpy())
-        x_test = np.vstack(df_test[features_col].to_numpy())
+    ensemble = {'regression': RegressorEnsemble, 'classification': ClassifierEnsemble}.get(task)()
 
-    elif library == 'torch':
-        raise NotImplementedError
+    for test_fold in df[fold_col].unique():
 
-    elif library == 'torch_geometric':
-        x_train = df_train[features_col].values
-        x_test = df_test[features_col].values
+        manager = KFoldManager(
+            df=df,
+            smiles_col=smiles_col,
+            features_col=features_col,
+            target_col=target_col,
+            fold_col=fold_col,
+            test_fold=test_fold,
+            weights_col=weights_col,
+            groups_col=groups_col
+        )
 
-    else:
-        raise ValueError('Wrong library passed')
+        unit_copy = deepcopy(unit)
 
-    model_ = copy.deepcopy(model)
-    model_.fit(x_train, y_train)
+        train_data = manager.get_non_test_data()
+        test_data = manager.get_test_data()
 
-    if task == 'regression':
-        score = score_regression_model(model_, x_test, y_test)
-    elif task == 'classification':
-        score = score_classification_model(model_, x_test, y_test)
-    else:
-        raise ValueError("Allowed options for < task > are: regression, classification")
+        unit_copy.fit(**train_data)
+        unit_copy.metrics['Training'] = unit_copy.score(**train_data)
+        unit_copy.metrics['Testing'] = unit_copy.score(**test_data)
 
-    models = {'model_1': model_}
-    scores = {'model_1': score}
+        ensemble.add_unit(unit_copy)
 
-    return scores, models
+    ensemble.average_metrics()
+    return ensemble

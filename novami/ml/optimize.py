@@ -12,7 +12,7 @@ from novami.ml.models import Unit, Ensemble, ClassifierUnit, RegressorUnit, Clas
 from novami.ml.score import average_scores, score_regression_model, score_classification_model
 from novami.ml.params import *
 from novami.ml.utils import *
-from novami.data.manager import DatasetManager
+from novami.data.manager import KFoldManager
 
 
 def random_parameters(params: dict):
@@ -223,7 +223,7 @@ def optuna_hyperparameter_search(model_class, df: pd.DataFrame, features_col: st
     return study, best_trial
 
 
-def train_ensemble(unit: Unit, dataset_manager: DatasetManager, task: str = 'regression'):
+def train_ensemble(unit: Unit, dataset_manager: KFoldManager, task: str = 'regression'):
     """
     Train an ensemble model based on dataset with KFold split.
 
@@ -232,7 +232,7 @@ def train_ensemble(unit: Unit, dataset_manager: DatasetManager, task: str = 'reg
     ----------
     unit: Unit
         A Unit to use for training.
-    dataset_manager: DatasetManager
+    dataset_manager: KFoldManager
         Dataset manager
     task: str
         Regression or classification
@@ -258,7 +258,7 @@ def train_ensemble(unit: Unit, dataset_manager: DatasetManager, task: str = 'reg
     return ensemble
 
 
-def optimize_unit_optuna(model_name: str, dataset_manager: DatasetManager, optimization_metric: str = 'RMSE',
+def optimize_unit_optuna(model_name: str, dataset_manager: KFoldManager, optimization_metric: str = 'RMSE',
                          task: str = 'regression', n_trials: int = 64, n_jobs: int = 1):
 
     # Select optimization direction

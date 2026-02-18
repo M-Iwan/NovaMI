@@ -486,7 +486,8 @@ def get_transformer_params(features: str):
     }
 
     features_mapping = {
-        'Morgan': binary,
+        'Daylight': binary,
+        'ECFP': binary,
         'MACCS': binary,
         'Klek': binary,
         'Mordred': binary,
@@ -501,7 +502,7 @@ def get_transformer_params(features: str):
 
     params = features_mapping.get(features, None)
     if params is None:
-        raise KeyError(f'No parameters defined for < {features} >. Please, update the < get_transformer_params >'
+        raise KeyError(f'No parameters defined for < {features} >. Please, update the < get_transformer_params > '
                        f'function at novami.data.transform')
 
     return params

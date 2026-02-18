@@ -5,14 +5,14 @@ import argparse
 import ast
 import pandas as pd
 import numpy as np
-import pickle
+import joblib
 from cddd.inference import InferenceModel
 from typing import Union, List
 
 parser = argparse.ArgumentParser(prog='CDDD', description='Calculate CDDD descriptors from SMILES')
 
-parser.add_argument('-i', '--input', help='Path to an input file. Must be a .csv file.')
-parser.add_argument('-o', '--output', help='Path to an output file. Must be a .pkl file.')
+parser.add_argument('-i', '--input', help='Path to an input file. Must be a .tsv file.')
+parser.add_argument('-o', '--output', help='Path to an output file. Must be a .joblib file.')
 parser.add_argument('-s', '--smiles_col', help='Name of the column holding the SMILES')
 parser.add_argument('-d', '--descriptor_col', help='Name of the column to which write the descriptors')
 parser.add_argument('-n', '--n_cpu', help='Number of CPU threads to use during calculations')
@@ -23,8 +23,8 @@ parsed_args = parser.parse_args()
 
 def main(args):
 
-    input_ = args.input  # .csv file
-    output_ = args.output   # .pkl file
+    input_ = args.input  # .tsv file
+    output_ = args.output   # .joblib file
     smiles_col_ = args.smiles_col
     descriptor_col_ = args.descriptor_col
     n_cpu = int(args.n_cpu)
@@ -60,9 +60,7 @@ def main(args):
         return np.nan
 
     df[descriptor_col_] = df[smiles_col_].apply(process, model_=model)
-
-    pickle.dump(df, open(output_, 'wb'), protocol=4)
-
+    joblib.dump(df, output_)
 
 if __name__ == '__main__':
     main(parsed_args)
