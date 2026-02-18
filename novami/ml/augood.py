@@ -6,11 +6,11 @@ import numpy as np
 import pandas as pd
 import polars as pl
 
-from novami.utils import log
 from novami.io import write_pl
 from novami.data.cluster import cc_cluster
 from novami.data.partition import minimal_train_test_split, group_kfold_split
 from novami.ml.evaluate import tt_evaluate, kf_evaluate
+from novami.ml.utils import log
 
 
 def good_curve(df: Union[pd.DataFrame, pl.DataFrame], smiles_col: str, cluster_features_col: str, training_features_col: str,
