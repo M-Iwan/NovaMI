@@ -8,7 +8,7 @@ Primarily for personal use: function signatures and repository structure may cha
 For convenience, .py files that work and are up-to-date are marked with *, while those unlikely to work (and should be removed) with #. If no symbol is given, the code should work, but won't be compatibile with the rest of the repository.
 
 ### Repository Structure
-Last updated on version: 0.3.1
+Last updated on version: 0.3.2
 
 ```
 novami/
@@ -49,7 +49,7 @@ novami/
 │   │   └── modellability.py*   MODI index
 │   ├── ml/
 │   │   ├── augood.py*   AU-GOOD framework for model's performance evaluation
-│   │   ├── evaluate.py#   Old code for model/ensemble evaluation
+│   │   ├── evaluate.py*   Code for simple unit/ensemble evaluations
 │   │   ├── models.py*   Self-contained, sklearn-compatibile models and ensembles; I'm very happy with this one :)
 │   │   ├── optimize.py*   Hyperparameter optimization; functions at the top of the file are outdated
 │   │   ├── params.py*   Pre-defined parameters for Optuna
@@ -65,13 +65,14 @@ novami/
 │   │   ├── duplicates.py*   Duplicate processing based on Median Absolute Deviation
 │   │   ├── filter.py*   Filter based on selected descriptors
 │   │   └── validate.py   Check validity of structure
-│   └── visualize/
-│       ├── ecdf.py*   Emprical Cumulative Distribution Function of molecular inter-distance 
-│       ├── embedding.py*   t-SNE and UMAP
-│       ├── performance.py   WIP: AU-GOOD framework-related plots
-│       ├── predictions.py*   Bunch of plots for assessing model performance; currently only Regression
-│       ├── properties.py*   Plot and compare molecular properties between datasets
-│       └── utils.py*   Helper functions and my custom palette
+│   ├── visualize/
+│   │   ├── ecdf.py*   Emprical Cumulative Distribution Function of molecular inter-distance 
+│   │   ├── embedding.py*   t-SNE and UMAP
+│   │   ├── performance.py   WIP: AU-GOOD framework-related plots
+│   │   ├── predictions.py*   Bunch of plots for assessing model performance; currently only Regression
+│   │   ├── properties.py*   Plot and compare molecular properties between datasets
+│   │   └── utils.py*   Helper functions and my custom palette
+│   └── utils.py*  Small helper functions that don't fit anywhere else
 ├── projects/
 │   ├── cddd_setup*   Files for setting up CDDD environment anywhere
 │   ├── osmordred_setup   WIP: Corrected Mordred descriptors
