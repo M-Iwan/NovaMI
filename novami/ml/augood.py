@@ -112,7 +112,7 @@ def good_curve(df: Union[pd.DataFrame, pl.DataFrame], smiles_col: str, cluster_f
                 thr_df = df.join(joblib.load(cluster_path), how='inner', on=smiles_col)
 
             else:
-                cluster_df = cc_cluster(
+                clustered_df = cc_cluster(
                     df=cluster_df,
                     features_col=cluster_features_col,
                     metric=distance_metric,
@@ -120,7 +120,7 @@ def good_curve(df: Union[pd.DataFrame, pl.DataFrame], smiles_col: str, cluster_f
                     n_jobs=n_jobs
                 )[[smiles_col, "Cluster"]]
                 joblib.dump(cluster_df, cluster_path)
-                thr_df = df.join(cluster_df, on=smiles_col, how='left')
+                thr_df = df.join(clustered_df, on=smiles_col, how='left')
 
         except Exception as e:
             log(f"Unable to cluster data at threshold < {threshold:.2f} > due to:\n{e}")
