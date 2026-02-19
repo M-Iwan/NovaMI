@@ -541,6 +541,7 @@ def get_transformer_params(features: str):
     }
 
     features_mapping = {
+        'AtomPair': binary,
         'Daylight': binary,
         'ECFP': binary,
         'MACCS': binary,
@@ -552,7 +553,10 @@ def get_transformer_params(features: str):
         'CDDD_internal': continuous,
         'MiniMol': continuous,
         'MAP': integer,
-        'MAPC': integer
+        'MAPC': integer,
+        'AtomPairCount': integer,
+        'DaylightCount': integer,
+        'ECFPCount': integer,
     }
 
     params = features_mapping.get(features, None)
