@@ -9,3 +9,5 @@ projects/cddd_setup/default_model.zip
 /novami.egg-info
 files/smina.static
 /dev
+novami/files/ChemBERTa-model.joblib
+novami/files/ChemBERTa-tokenizer.joblib
