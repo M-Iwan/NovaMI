@@ -9,6 +9,7 @@ import polars as pl
 from novami.utils import log
 from novami.io import write_pl
 from novami.data.cluster import cc_cluster
+from novami.data.transform import get_transformer_params, DataTransformer
 from novami.data.partition import minimal_train_test_split, group_kfold_split
 from novami.ml.evaluate import tt_evaluate, kf_evaluate
 
@@ -87,12 +88,16 @@ def good_curve(df: Union[pd.DataFrame, pl.DataFrame], smiles_col: str, cluster_f
     if not isinstance(n_jobs, int) or n_jobs < 1:
         raise TypeError("Number of jobs must be a positive integer")
 
-    thresholds = np.arange(min_distance+step, max_distance+step, step, dtype='float')
+    thresholds = np.arange(min_distance, max_distance, step, dtype='float')
 
     data_dir = str(os.path.join(output_dir, f"{cluster_features_col}_{distance_metric}"))
     results_dir = str(os.path.join(data_dir, f"{model_name}_{training_features_col}"))
     os.makedirs(results_dir, exist_ok=True)
     scores = []
+
+    # Transform the data prior to clustering
+    dt = DataTransformer(**get_transformer_params(cluster_features_col))
+    cluster_df = dt.fit_transform_df(df[[smiles_col, cluster_features_col]], features_col=training_features_col)
 
     for threshold in thresholds:
         threshold = np.round(threshold, 2)
@@ -104,20 +109,17 @@ def good_curve(df: Union[pd.DataFrame, pl.DataFrame], smiles_col: str, cluster_f
 
         try:
             if os.path.isfile(cluster_path):
-                cluster_df = joblib.load(cluster_path)
-                thr_df = df.join(cluster_df, how='inner', on=smiles_col)
+                thr_df = df.join(joblib.load(cluster_path), how='inner', on=smiles_col)
 
             else:
                 thr_df = cc_cluster(
-                    df=df,
+                    df=cluster_df,
                     features_col=cluster_features_col,
                     metric=distance_metric,
                     threshold=threshold,
                     n_jobs=n_jobs
                 )
-
-                cluster_df = thr_df[[smiles_col, "Cluster"]]
-                joblib.dump(cluster_df, cluster_path)
+                joblib.dump(thr_df[[smiles_col, "Cluster"]], cluster_path)
 
         except Exception as e:
             log(f"Unable to cluster data at threshold < {threshold:.2f} > due to:\n{e}")
@@ -213,7 +215,12 @@ def good_curve(df: Union[pd.DataFrame, pl.DataFrame], smiles_col: str, cluster_f
         write_pl(thr_scores, threshold_path)
         log(f"\tResults written to\n {threshold_path}")
 
-    scores = pl.concat(scores)
+    if scores:
+        scores = pl.concat(scores)
 
-    write_pl(scores, str(os.path.join(results_dir, "scores.tsv")))
-    return scores
+        write_pl(scores, str(os.path.join(results_dir, "scores.tsv")))
+        return scores
+
+    else:
+        print(f"Unable to obtain even one valid split.")
+        return None
