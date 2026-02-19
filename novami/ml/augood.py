@@ -97,7 +97,7 @@ def good_curve(df: Union[pd.DataFrame, pl.DataFrame], smiles_col: str, cluster_f
 
     # Transform the data prior to clustering
     dt = DataTransformer(**get_transformer_params(cluster_features_col))
-    cluster_df = dt.fit_transform_df(df[[smiles_col, cluster_features_col]], features_col=training_features_col)
+    cluster_df = dt.fit_transform_df(df[[smiles_col, cluster_features_col]], features_col=cluster_features_col)
 
     for threshold in thresholds:
         threshold = np.round(threshold, 2)
