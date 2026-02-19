@@ -1,3 +1,13 @@
+# [0.3.3]: 19-02-2026
+
+[Added]
+- Added support for parallel calculation of all available descriptors (except CDDD and Mordred)
+- Added AtomPairs descriptors
+- Added support for Count-variants of ECFP, Daylight and AtomPair fingerprints
+[Changed]
+- Slightly modified ml.augood module - the data is now transformed before clustering so that metrics like
+cosine distance actually can work
+
 ## [0.3.2]: 18-02-2026
 
 [Added]

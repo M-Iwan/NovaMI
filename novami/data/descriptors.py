@@ -1,78 +1,86 @@
-import json
 import os
-import pickle
+import math
+import json
 import joblib
-from typing import Union, List
+from joblib import Parallel, delayed
 from importlib.resources import files
+from typing import Union, List
+from itertools import chain
 
 import numpy as np
 import pandas as pd
 import polars as pl
 from rdkit import Chem
-from rdkit.Chem import rdMolDescriptors, Descriptors, rdFingerprintGenerator, RDKFingerprint
+from rdkit.Chem import rdMolDescriptors, Descriptors, rdFingerprintGenerator
 
 import torch
 
 from novami.io.file import read_pd, write_pd
 
 
-def smiles_2_ecfp(smiles: Union[str, List[str]], radius: int = 2, nbits: int = 1024, dense: bool = True, mfpgen=None):
+def smiles_2_ecfp(smiles: Union[str, List[str], np.ndarray[str]], radius: int = 2, nbits: int = 1024, count: bool = False):
     """
+    Convert SMILES string(s) to a (Count) Extended Connectivity Fingerprint.
+
     Parameters
     ----------
-    smiles: Union[str, List[str]]
-        A valid SMILES or list of valid SMILES strings.
+    smiles: Union[str, List[str], np.ndarray[str]]
+        A SMILES string or a list of SMILES strings.
     radius: int, optional
         The radius parameter for ECFP calculation. Default is 2.
     nbits: int, optional
         The length of the FP. Default is 1024.
-    dense: bool, optional
-        If True, return a dense representation of FP. Default is True.
-    mfpgen: rdkit.Chem.rdFingerprintGenerator.FingeprintGenerator64, optional
-        If passed, the radius and nbits will be ignored.
+    count: bool
+        If True, return a count version of ECFP. Default is False.
 
     Returns
     -------
-    array: Union[np.ndarray, List[np.ndarray]]
-        A np.ndarray or list of np.ndarrays.
+    fp: np.ndarray
+    OR
+    fps: List[np.ndarray]
     """
 
-    if mfpgen is None:
-        mfpgen = rdFingerprintGenerator.GetMorganGenerator(radius=radius, fpSize=nbits)
-
-    def get_embedding(smi: str):
-        try:
-            if (mol := Chem.MolFromSmiles(smi)) is None:
-                print(f'Unable to construct a valid molecule from < {smi} >')
-                return np.nan
-
-            fp = np.array(mfpgen.GetFingerprint(mol), dtype=np.uint8)
-
-            return fp if dense else fp.nonzero()[0]
-
-        except Exception as e:
-            print(f'Unable to process < {smi} > due to: \n{e}')
-            return np.nan
+    gen = rdFingerprintGenerator.GetMorganGenerator(radius=radius, fpSize=nbits)
 
     if isinstance(smiles, str):
-        return get_embedding(smiles)
+        if (mol := Chem.MolFromSmiles(smiles)) is None:
+            print(f'Unable to construct a valid molecule from < {smiles} >')
+            return np.nan
 
-    if isinstance(smiles, list) and all(isinstance(smi, str) for smi in smiles):
-        return [get_embedding(smi) for smi in smiles]
+        if count:
+            fp = gen.GetFingerprintAsNumPy(mol)
+        else:
+            fp = gen.GetCountFingerprintAsNumPy(mol)
 
-    print(f'Expected < smiles > to be str or list, received < {type(smiles)} > instead')
-    return np.nan
+        return fp
+
+    elif isinstance(smiles, list) or isinstance(smiles, np.ndarray):
+        mols = [Chem.MolFromSmiles(smi) for smi in smiles]
+        if any([mol is None for mol in mols]):
+            print(f"At least one valid molecule cannot be constructed from provided SMILES")
+            return [np.nan] * len(mols)
+
+        if count:
+            fps = [np.array(fp.ToList(), dtype=np.uint16) for fp in gen.GetCountFingerprints(mols)]  # returns UIntSparseBitVector
+
+        else:
+            fps = [np.array(fp, dtype=np.uint8) for fp in gen.GetFingerprints(mols)]  # returns ExplicitBitVector
+
+        return fps
+
+    else:
+        raise TypeError(f"Expected smiles to be str or List[str], got {type(smiles)} instead")
 
 
-def dataframe_2_ecfp(df: Union[pd.DataFrame, pl.DataFrame], smiles_col: str = 'SMILES', descriptor_col: str = 'ECFP',
-                     radius: int = 2, nbits: int = 1024, dense: bool = True):
+def dataframe_2_ecfp(df: pl.DataFrame, smiles_col: str = 'SMILES', descriptor_col: str = None, radius: int = 2,
+                     nbits: int = 1024, count: bool = False, n_jobs: int = 1, batch_size: int = 512):
     """
-    Convert SMILES in a DataFrame to ECFP.
+    Convert SMILES string(s) in a DataFrame to a Extended Connectivity (Count) Fingerprint.
 
     Parameters
     ----------
-    df : Union[pd.DataFrame, pl.DataFrame]
-        A pandas/polars DataFrame with data.
+    df : pl.DataFrame
+        A polars DataFrame.
     smiles_col : str, optional
         Name of column with SMILES.
     descriptor_col : str, optional
@@ -81,270 +89,530 @@ def dataframe_2_ecfp(df: Union[pd.DataFrame, pl.DataFrame], smiles_col: str = 'S
         The radius parameter for ECFP calculation. Default is 2.
     nbits: int, optional
         The length of the FP. Default is 1024.
-    dense: bool, optional
-        If True, return a dense representation of FP. Default is True.
+    count: bool
+        If True, return a count version of ECFP. Default is False.
+    n_jobs: int, optional
+        Number of cores to use for calculations.
+    batch_size: int, optional
+        Number of SMILES per batch.
 
     Returns
     -------
-    df : pd.DataFrame, pl.DataFrame
-        A pandas/polars Dataframe with added ECFP.
-        If 'dense' is set to False, returns a numpy array with indices of non-zero elements.
+    df : pl.DataFrame
+        A polars Dataframe with added ECFP/ECFPCount column.
     """
 
-    mfpgen = rdFingerprintGenerator.GetMorganGenerator(radius=radius, fpSize=nbits)
+    if descriptor_col is None:
+        if count:
+            descriptor_col = 'ECFPCount'
+        else:
+            descriptor_col = 'ECFP'
 
-    if isinstance(df, pd.DataFrame):
-        df[descriptor_col] = smiles_2_ecfp(df[smiles_col].tolist(), radius=radius, nbits=nbits, dense=dense, mfpgen=mfpgen)
-        return df
-    elif isinstance(df, pl.DataFrame):
-        df = df.with_columns(pl.Series(descriptor_col, smiles_2_ecfp(df[smiles_col].to_list(),
-                                                                     radius=radius, nbits=nbits, dense=dense, mfpgen=mfpgen)))
-        return df
-    else:
-        raise TypeError(f"Expected df to be either polars or pandas DataFrame, got {type(df)} instead.")
+    smiles = list(set(df[smiles_col].to_list()))
+    n_batches = math.ceil(len(smiles) / batch_size)
+    smiles_batches = np.array_split(smiles, n_batches)
+
+    fps = Parallel(n_jobs=n_jobs, verbose=1, timeout=60, backend='loky')(
+        delayed(smiles_2_ecfp)(smiles=smi, radius=radius, nbits=nbits, count=count) for smi in smiles_batches
+    )
+
+    fps = chain.from_iterable(fps)
+
+    smiles_df = pl.DataFrame({
+        'SMILES': smiles,
+        descriptor_col: fps
+    })
+
+    df = df.join(smiles_df, on=smiles_col, how='left')
+
+    return df
 
 
-def smiles_2_daylight(smiles: Union[str, List[str]], minpath: int = 1, maxpath: int = 7, nbits: int = 1024,
-                      dense: bool = True):
+def smiles_2_daylight(smiles: Union[str, List[str], np.ndarray[str]], min_path: int = 1, max_path: int = 7,
+                      nbits: int = 1024, count: bool = False):
     """
+    Convert SMILES in a DataFrame to Daylight (Count) Fingerprints.
+
     Parameters
     ----------
-    smiles: Union[str, List[str]]
-        A valid SMILES or list of valid SMILES strings.
-    minpath: int
+    smiles: Union[str, List[str], np.ndarray[str]]
+        A SMILES string or a list of SMILES strings.
+    min_path: int
         Smallest path length to consider. Default is 1.
-    maxpath: int
+    max_path: int
         Biggest path length to consider. Default is 7.
     nbits: int, optional
         The length of the FP. Default is 1024.
-    dense: bool, optional
-        If True, return a dense representation of FP. Default is True.
+    count: bool
+        If True, return a count version of DaylightFP. Default is False.
 
     Returns
     -------
-    array: Union[np.ndarray, List[np.ndarray]]
-        A np.ndarray or list of np.ndarrays.
+    fp: np.ndarray
+    OR
+    fps: List[np.ndarray]
     """
 
-    def get_embedding(smi: str):
-        try:
-            if (mol := Chem.MolFromSmiles(smi)) is None:
-                print(f'Unable to construct a valid molecule from < {smi} >')
-                return np.nan
-
-            fp = np.array(RDKFingerprint(mol, minPath=minpath, maxPath=maxpath, fpSize=nbits), dtype=np.uint8)
-
-            return fp if dense else fp.nonzero()[0]
-
-        except Exception as e:
-            print(f'Unable to process < {smi} > due to: \n{e}')
-            return np.nan
+    gen = rdFingerprintGenerator.GetRDKitFPGenerator(minPath=min_path, maxPath=max_path, fpSize=nbits)
 
     if isinstance(smiles, str):
-        return get_embedding(smiles)
+        if (mol := Chem.MolFromSmiles(smiles)) is None:
+            print(f'Unable to construct a valid molecule from < {smiles} >')
+            return np.nan
 
-    if isinstance(smiles, list) and all(isinstance(smi, str) for smi in smiles):
-        return [get_embedding(smi) for smi in smiles]
+        if count:
+            fp = gen.GetFingerprintAsNumPy(mol)
+        else:
+            fp = gen.GetCountFingerprintAsNumPy(mol)
 
-    print(f'Expected < smiles > to be str or list, received < {type(smiles)} > instead')
-    return np.nan
+        return fp
+
+    elif isinstance(smiles, list) or isinstance(smiles, np.ndarray):
+        mols = [Chem.MolFromSmiles(smi) for smi in smiles]
+        if any([mol is None for mol in mols]):
+            print(f"At least one valid molecule cannot be constructed from provided SMILES")
+            return [np.nan] * len(mols)
+
+        if count:
+            fps = [np.array(fp.ToList(), dtype=np.uint16) for fp in gen.GetCountFingerprints(mols)]  # returns UIntSparseBitVector
+
+        else:
+            fps = [np.array(fp, dtype=np.uint8) for fp in gen.GetFingerprints(mols)]  # returns ExplicitBitVector
+
+        return fps
+
+    else:
+        raise TypeError(f"Expected smiles to be str or Union[List[str], np.ndarray[str]], got {type(smiles)} instead")
 
 
-def dataframe_2_daylight(df: Union[pd.DataFrame, pl.DataFrame], smiles_col: str = 'SMILES', descriptor_col: str = 'Daylight',
-                         minpath: int = 1, maxpath: int = 7, nbits: int = 1024, dense: bool = True):
+def dataframe_2_daylight(df: pl.DataFrame, smiles_col: str = 'SMILES', descriptor_col: str = None, min_path: int = 1,
+                         max_path: int = 7, nbits: int = 1024, count: bool = False, n_jobs: int = 1, batch_size: int = 512):
     """
-    Convert SMILES in a DataFrame to Daylight-like descriptors.
+    Convert SMILES in a DataFrame to Daylight (Count) Fingerprints.
 
     Parameters
     ----------
-    df : Union[pd.DataFrame, pl.DataFrame]
-        A pandas/polars DataFrame with data.
+    df : pl.DataFrame
+        A polars DataFrame.
     smiles_col : str, optional
         Name of column with SMILES.
     descriptor_col : str, optional
         Name of column to which add calculated descriptors.
-    minpath: int
+    min_path: int
         Smallest path length to consider. Default is 1.
-    maxpath: int
+    max_path: int
         Biggest path length to consider. Default is 7.
     nbits: int, optional
         The length of the FP. Default is 1024.
-    dense: bool, optional
-        If True, return a dense representation of FP. Default is True.
+    count: bool
+        If True, return a count version of DaylightFP. Default is False.
+    n_jobs: int, optional
+        Number of cores to use for calculations.
+    batch_size: int, optional
+        Number of SMILES per batch.
 
     Returns
     -------
-    df : pd.DataFrame, pl.DataFrame
-        A pandas/polars Dataframe with added Daylight fingerprints .
-        If 'dense' is set to False, returns a numpy array with indices of non-zero elements.
+    df : pl.DataFrame
+        A polars Dataframe with added Daylight/DaylightCount column.
     """
 
-    if isinstance(df, pd.DataFrame):
-        df[descriptor_col] = smiles_2_daylight(df[smiles_col].tolist(), minpath=minpath, maxpath=maxpath, nbits=nbits, dense=dense)
-        return df
-    elif isinstance(df, pl.DataFrame):
-        df = df.with_columns(pl.Series(descriptor_col, smiles_2_daylight(df[smiles_col].to_list(),
-                                                        minpath=minpath, maxpath=maxpath, nbits=nbits, dense=dense)))
-        return df
-    else:
-        raise TypeError(f"Expected df to be either polars or pandas DataFrame, got {type(df)} instead.")
+    if descriptor_col is None:
+        if count:
+            descriptor_col = 'DaylightCount'
+        else:
+            descriptor_col = 'Daylight'
+
+    smiles = list(set(df[smiles_col].to_list()))
+    n_batches = math.ceil(len(smiles) / batch_size)
+    smiles_batches = np.array_split(smiles, n_batches)
+
+    fps = Parallel(n_jobs=n_jobs, verbose=1, timeout=60, backend='loky')(
+        delayed(smiles_2_daylight)(smiles=smi, min_path=min_path, max_path=max_path, nbits=nbits, count=count) for smi in smiles_batches
+    )
+
+    fps = chain.from_iterable(fps)
+
+    smiles_df = pl.DataFrame({
+        'SMILES': smiles,
+        descriptor_col: fps
+    })
+
+    df = df.join(smiles_df, on=smiles_col, how='left')
+
+    return df
 
 
-def smiles_2_maccs(smiles: Union[str, List[str]], dense: bool = True):
+def smiles_2_atompair(smiles: Union[str, List[str], np.ndarray[str]], min_distance: int = 1, max_distance: int = 7,
+                      nbits: int = 1024, count: bool = False):
     """
+    Convert SMILES in to AtomPair (Count) Fingerprints.
+
     Parameters
     ----------
-    smiles: Union[str, List[str]]
-        A valid SMILES or list of valid SMILES strings.
-    dense: bool, optional
-        If True, return a dense representation of FP. Default is True.
+    smiles: Union[str, List[str], np.ndarray[str]]
+        A SMILES string or a list of SMILES strings.
+    min_distance: int
+        Smallest distance between two atoms to consider. Default is 1.
+    max_distance: int
+        Largest distance between two atoms to consider. Default is 30.
+    nbits: int, optional
+        The length of the FP. Default is 1024.
+    count: bool
+        If True, return a count version of AtomPairFP. Default is False.
 
     Returns
     -------
-    array: Union[np.ndarray, List[np.ndarray]]
-        A np.ndarray or list of np.ndarrays.
+    fp: np.ndarray
+    OR
+    fps: List[np.ndarray]
     """
 
-    def get_embedding(smi: str):
-        try:
-            if (mol := Chem.MolFromSmiles(smi)) is None:
-                print(f'Unable to construct a valid molecule from < {smi} >')
-                return np.nan
-
-            fp = np.array(rdMolDescriptors.GetMACCSKeysFingerprint(mol), dtype=np.uint8)
-
-            return fp if dense else fp.nonzero()[0]
-
-        except Exception as e:
-            print(f'Unable to process < {smi} > due to: \n{e}')
-            return np.nan
+    gen = rdFingerprintGenerator.GetAtomPairGenerator(minDistance=min_distance, maxDistance=max_distance, fpSize=nbits)
 
     if isinstance(smiles, str):
-        return get_embedding(smiles)
+        if (mol := Chem.MolFromSmiles(smiles)) is None:
+            print(f'Unable to construct a valid molecule from < {smiles} >')
+            return np.nan
 
-    if isinstance(smiles, list) and all(isinstance(smi, str) for smi in smiles):
-        return [get_embedding(smi) for smi in smiles]
+        if count:
+            fp = gen.GetFingerprintAsNumPy(mol)
+        else:
+            fp = gen.GetCountFingerprintAsNumPy(mol)
 
-    print(f'Expected < smiles > to be str or list, received < {type(smiles)} > instead')
-    return np.nan
+        return fp
+
+    elif isinstance(smiles, list) or isinstance(smiles, np.ndarray):
+        mols = [Chem.MolFromSmiles(smi) for smi in smiles]
+        if any([mol is None for mol in mols]):
+            print(f"At least one valid molecule cannot be constructed from provided SMILES")
+            return [np.nan] * len(mols)
+
+        if count:
+            fps = [np.array(fp.ToList(), dtype=np.uint16) for fp in gen.GetCountFingerprints(mols)]  # returns UIntSparseBitVector
+
+        else:
+            fps = [np.array(fp, dtype=np.uint8) for fp in gen.GetFingerprints(mols)]  # returns ExplicitBitVector
+
+        return fps
+
+    else:
+        raise TypeError(f"Expected smiles to be str or Union[List[str], np.ndarray[str]], got {type(smiles)} instead")
 
 
-def dataframe_2_maccs(df: Union[pd.DataFrame, pl.DataFrame], smiles_col: str = 'SMILES', descriptor_col: str = 'MACCS',
-                      dense: bool = True):
+def dataframe_2_atompair(df: pl.DataFrame, smiles_col: str = 'SMILES', descriptor_col: str = None, min_distance: int = 1,
+                         max_distance: int = 7, nbits: int = 1024, count: bool = False, n_jobs: int = 1, batch_size: int = 512):
     """
-    Convert SMILES in dataframe to MACCS fingerprints.
+    Convert SMILES in a DataFrame to AtomPair (Count) Fingerprints.
 
     Parameters
     ----------
-    df : Union[pd.DataFrame, pl.DataFrame]
-        A pandas/polars DataFrame with data.
+    df : pl.DataFrame
+        A polars DataFrame.
     smiles_col : str, optional
         Name of column with SMILES.
     descriptor_col : str, optional
         Name of column to which add calculated descriptors.
-    dense: bool, optional
-        If True, return a dense representation of FP. Default is True.
+    min_distance: int
+        Smallest distance between two atoms to consider. Default is 1.
+    max_distance: int
+        Largest distance between two atoms to consider. Default is 30.
+    nbits: int, optional
+        The length of the FP. Default is 1024.
+    count: bool
+        If True, return a count version of AtomPairFP. Default is False.
+    n_jobs: int, optional
+        Number of cores to use for calculations.
+    batch_size: int, optional
+        Number of SMILES per batch.
 
     Returns
     -------
-    df : Union[pd.DataFrame, pl.DataFrame]
-        A pandas/polars Dataframe with added MACCS fingerprints for given SMILES.
-        If 'dense' is set to False, returns a numpy array with indices of non-zero elements.
+    df : pl.DataFrame
+        A polars Dataframe with added AtomPair/AtomPairCount column.
     """
 
-    if isinstance(df, pd.DataFrame):
-        df[descriptor_col] = smiles_2_maccs(df[smiles_col].tolist(), dense=dense)
-        return df
-    elif isinstance(df, pl.DataFrame):
-        df = df.with_columns(pl.Series(descriptor_col, smiles_2_maccs(df[smiles_col].to_list(), dense=dense)))
-        return df
-    else:
-        raise TypeError(f"Expected df to be either polars or pandas DataFrame, got {type(df)} instead.")
+    if descriptor_col is None:
+        if count:
+            descriptor_col = 'AtomPairCount'
+        else:
+            descriptor_col = 'AtomPair'
+
+    smiles = list(set(df[smiles_col].to_list()))
+    n_batches = math.ceil(len(smiles) / batch_size)
+    smiles_batches = np.array_split(smiles, n_batches)
+
+    fps = Parallel(n_jobs=n_jobs, verbose=1, timeout=60, backend='loky')(
+        delayed(smiles_2_atompair)(smiles=smi, min_distance=min_distance, max_distance=max_distance, nbits=nbits, count=count)
+        for smi in smiles_batches
+    )
+
+    fps = chain.from_iterable(fps)
+
+    smiles_df = pl.DataFrame({
+        'SMILES': smiles,
+        descriptor_col: fps
+    })
+
+    df = df.join(smiles_df, on=smiles_col, how='left')
+
+    return df
 
 
-def smiles_2_klek(smiles: Union[str, List[str]], dense: bool = True, klek_mols: List = None):
+def smiles_2_maccs(smiles: Union[str, List[str], np.ndarray[str]]):
     """
+    Convert SMILES to MACCS Fingerprints.
+
     Parameters
     ----------
     smiles: Union[str, List[str]]
-        A valid SMILES or list of valid SMILES strings.
-    dense: bool, optional
-        If True, return a dense representation of FP. Default is True.
-    klek_mols: List
-        A list of RDKit molecules from Klekota&Roth SMARTS definitions.
-        If not passed, they are read from included resources.
+        A SMILES or list of SMILES strings.
 
     Returns
     -------
-    array: Union[np.ndarray, List[np.ndarray]]
-        A np.ndarray or list of np.ndarrays.
+    fp: np.ndarray
+    OR
+    fps: List[np.ndarray]
     """
-
-    if klek_mols is None:
-        data_file = files('novami.files').joinpath('klekota_roth.joblib')
-        klek_mols = joblib.load(data_file)
-
-    def get_embedding(smi: str, kmols: List):
-        try:
-            if (mol := Chem.MolFromSmiles(smi)) is None:
-                print(f'Unable to construct a valid molecule from < {smi} >')
-                return np.nan
-
-            fp = np.array([1 if mol.HasSubstructMatch(km) else 0 for km in kmols], dtype=np.uint8)
-
-            return fp if dense else fp.nonzero()[0]
-
-        except Exception as e:
-            print(f'Unable to process < {smi} > due to: \n{e}')
-            return np.nan
 
     if isinstance(smiles, str):
-        return get_embedding(smiles, klek_mols)
+        if (mol := Chem.MolFromSmiles(smiles)) is None:
+            print(f'Unable to construct a valid molecule from < {smiles} >')
+            return np.nan
 
-    if isinstance(smiles, list) and all(isinstance(smi, str) for smi in smiles):
-        return [get_embedding(smi, klek_mols) for smi in smiles]
+        fp = np.array(rdMolDescriptors.GetMACCSKeysFingerprint(mol), dtype=np.uint8)
+        return fp
 
-    print(f'Expected < smiles > to be str or list, received < {type(smiles)} > instead')
-    return np.nan
+    elif isinstance(smiles, list) or isinstance(smiles, np.ndarray):
+        mols = [Chem.MolFromSmiles(smi) for smi in smiles]
+        if any([mol is None for mol in mols]):
+            print(f"At least one valid molecule cannot be constructed from provided SMILES")
+            return [np.nan] * len(mols)
+
+        fps = [np.array(rdMolDescriptors.GetMACCSKeysFingerprint(mol), dtype=np.uint8) for mol in mols]
+        return fps
+
+    else:
+        raise TypeError(f"Expected smiles to be str or Union[List[str], np.ndarray[str]], got {type(smiles)} instead")
 
 
-def dataframe_2_klek(df: Union[pd.DataFrame, pl.DataFrame], smiles_col: str = 'SMILES', descriptor_col: str = 'Klek',
-                     dense: bool = True):
+def dataframe_2_maccs(df: pl.DataFrame, smiles_col: str = 'SMILES', descriptor_col: str = 'MACCS',
+                      n_jobs: int = 1, batch_size: int = 512):
     """
-    Convert SMILES in dataframe to Klekota&Roth fingerprints.
+    Convert SMILES in a DataFrame to MACCS Fingerprints.
 
     Parameters
     ----------
-    df : Union[pd.DataFrame, pl.DataFrame]
-        A pandas/polars DataFrame with data.
+    df : pl.DataFrame
+        A polars DataFrame with data.
     smiles_col : str, optional
         Name of column with SMILES.
     descriptor_col : str, optional
         Name of column to which add calculated descriptors.
-    dense: bool, optional
-        If True, return a dense representation of FP. Default is True.
+    n_jobs: int, optional
+        Number of cores to use for calculations.
+    batch_size: int, optional
+        Number of SMILES per batch.
 
     Returns
     -------
-    df : Union[pd.DataFrame, pl.DataFrame]
-        A pandas/polars Dataframe with added Klekota&Roth fingerprints.
-        If 'dense' is set to False, returns a numpy array with indices of non-zero elements.
+    df : pl.DataFrame
+        A polars Dataframe with added MACCS fingerprints for given SMILES.
     """
 
-    data_file = files('novami.files').joinpath('klekota_roth.joblib')
-    klek_mols = joblib.load(data_file)
+    smiles = list(set(df[smiles_col].to_list()))
+    n_batches = math.ceil(len(smiles) / batch_size)
+    smiles_batches = np.array_split(smiles, n_batches)
 
-    if isinstance(df, pd.DataFrame):
-        df[descriptor_col] = smiles_2_klek(df[smiles_col].tolist(), dense=dense, klek_mols=klek_mols)
-        return df
-    elif isinstance(df, pl.DataFrame):
-        df = df.with_columns(pl.Series(descriptor_col, smiles_2_klek(df[smiles_col].to_list(), dense=dense, klek_mols=klek_mols)))
-        return df
+    fps = Parallel(n_jobs=n_jobs, verbose=1, timeout=60, backend='loky')(
+        delayed(smiles_2_maccs)(smiles=smi) for smi in smiles_batches
+    )
+
+    fps = chain.from_iterable(fps)
+
+    smiles_df = pl.DataFrame({
+        'SMILES': smiles,
+        descriptor_col: fps
+    })
+
+    df = df.join(smiles_df, on=smiles_col, how='left')
+
+    return df
+
+
+def smiles_2_klek(smiles: Union[str, List[str], np.ndarray[str]]):
+    """
+    Convert SMILES to Klekota&Roth Fingerprints.
+
+    Parameters
+    ----------
+    smiles: Union[str, List[str]]
+        A SMILES or list of SMILES strings.
+
+    Returns
+    -------
+    fp: np.ndarray
+    OR
+    fps: List[np.ndarray]
+    """
+
+    def get_fp(mol, smarts):
+        fp = [1 if mol.HasSubstructMatch(sm) else 0 for sm in smarts]
+        fp = np.array(fp, dtype=np.uint8)
+        return fp
+
+    klekota_smarts = joblib.load(files('novami.files').joinpath('klekota_roth.joblib'))
+
+    if isinstance(smiles, str):
+        if (mol := Chem.MolFromSmiles(smiles)) is None:
+            print(f'Unable to construct a valid molecule from < {smiles} >')
+            return np.nan
+
+        return get_fp(mol=mol, smarts=klekota_smarts)
+
+    elif isinstance(smiles, list) or isinstance(smiles, np.ndarray):
+        mols = [Chem.MolFromSmiles(smi) for smi in smiles]
+        if any([mol is None for mol in mols]):
+            print(f"At least one valid molecule cannot be constructed from provided SMILES")
+            return [np.nan] * len(mols)
+
+        return [get_fp(mol=mol, smarts=klekota_smarts) for mol in mols]
+
     else:
-        raise TypeError(f"Expected df to be either polars or pandas DataFrame, got {type(df)} instead.")
+        raise TypeError(f"Expected smiles to be str or Union[List[str], np.ndarray[str]], got {type(smiles)} instead")
 
 
-def smiles_2_rdkit(smiles: Union[str, List[str]], decimals: int = 5):
+def dataframe_2_klek(df: pl.DataFrame, smiles_col: str = 'SMILES', descriptor_col: str = 'Klek',
+                     n_jobs: int = 1, batch_size: int = 512):
+    """
+    Convert SMILES in a DataFrame to Klekota&Roth Fingerprints.
+
+    Parameters
+    ----------
+    df: pl.DataFrame
+        A polars DataFrame with data.
+    smiles_col: str, optional
+        Name of column with SMILES.
+    descriptor_col: str, optional
+        Name of column to which add calculated descriptors.
+    n_jobs: int, optional
+        Number of cores to use for calculations.
+    batch_size: int, optional
+        Number of SMILES per batch.
+
+    Returns
+    -------
+    df : pl.DataFrame
+        A polars Dataframe with added Klek column.
+    """
+
+    smiles = list(set(df[smiles_col].to_list()))
+    n_batches = math.ceil(len(smiles) / batch_size)
+    smiles_batches = np.array_split(smiles, n_batches)
+
+    fps = Parallel(n_jobs=n_jobs, verbose=1, timeout=60, backend='loky')(
+        delayed(smiles_2_klek)(smiles=smi) for smi in smiles_batches
+    )
+
+    fps = chain.from_iterable(fps)
+
+    smiles_df = pl.DataFrame({
+        'SMILES': smiles,
+        descriptor_col: fps
+    })
+
+    df = df.join(smiles_df, on=smiles_col, how='left')
+
+    return df
+
+
+def smiles_2_rdkit(smiles: Union[str, List[str], np.ndarray[str]], decimals: int = 5):
+    """
+    Convert SMILES to RDKit descriptors.
+
+    Parameters
+    ----------
+    smiles: Union[str, List[str], np.ndarray[str]]
+        A SMILES or list of SMILES strings.
+    decimals: int
+        Number of decimals to keep.
+
+    Returns
+    -------
+    Union[np.ndarray, List[np.ndarray]]
+    """
+
+    def get_desc(mol, decimals: int):
+        desc = Descriptors.CalcMolDescriptors(mol, silent=False, missingVal=np.nan).values()
+        desc = np.round(np.fromiter(desc, dtype=np.float64), decimals)
+        return desc
+
+    if isinstance(smiles, str):
+        if (mol := Chem.MolFromSmiles(smiles)) is None:
+            print(f'Unable to construct a valid molecule from < {smiles} >')
+            return np.nan
+
+        return get_desc(mol=mol, decimals=decimals)
+
+    elif isinstance(smiles, list) or isinstance(smiles, np.ndarray):
+        mols = [Chem.MolFromSmiles(smi) for smi in smiles]
+        if any([mol is None for mol in mols]):
+            print(f"At least one valid molecule cannot be constructed from provided SMILES")
+            return [np.nan] * len(mols)
+
+        return [get_desc(mol=mol, decimals=decimals) for mol in mols]
+
+    else:
+        raise TypeError(f"Expected smiles to be str or Union[List[str], np.ndarray[str]], got {type(smiles)} instead")
+
+
+def dataframe_2_rdkit(df: pl.DataFrame, smiles_col: str = 'SMILES', descriptor_col: str = 'RDKit',
+                      decimals: int = 5, n_jobs: int = 1, batch_size: int = 512):
+    """
+    Convert SMILES in a DataFrame to RDKit descriptors.
+
+    Parameters
+    ----------
+    df : pl.DataFrame
+        A polars DataFrame with data.
+    smiles_col : str, optional
+        Name of column with SMILES.
+    descriptor_col : str, optional
+        Name of column to which add calculated descriptors.
+    decimals: int
+        Number of decimals to keep.
+    n_jobs: int, optional
+        Number of cores to use for calculations.
+    batch_size: int, optional
+        Number of SMILES per batch.
+
+    Returns
+    -------
+    df : pl.DataFrame
+        A polars Dataframe with added RDKit column.
+    """
+
+    smiles = list(set(df[smiles_col].to_list()))
+    n_batches = math.ceil(len(smiles) / batch_size)
+    smiles_batches = np.array_split(smiles, n_batches)
+
+    desc = Parallel(n_jobs=n_jobs, verbose=1, timeout=60, backend='loky')(
+        delayed(smiles_2_rdkit)(smiles=smi, decimals=decimals) for smi in smiles_batches
+    )
+
+    desc = chain.from_iterable(desc)
+
+    smiles_df = pl.DataFrame({
+        'SMILES': smiles,
+        descriptor_col: desc
+    })
+
+    df = df.join(smiles_df, on=smiles_col, how='left')
+
+    return df
+
+
+def smiles_2_chemberta(smiles: Union[str, List[str], np.ndarray[str]], decimals: int = 5):
     """
     Parameters
     ----------
@@ -355,80 +623,16 @@ def smiles_2_rdkit(smiles: Union[str, List[str]], decimals: int = 5):
 
     Returns
     -------
-    array: Union[np.ndarray, List[np.ndarray]]
-        A np.ndarray or list of np.ndarrays.
+    Union[np.ndarray, List[np.ndarray]]
     """
 
-    def get_embedding(smi: str):
-        try:
-            if (mol := Chem.MolFromSmiles(smi)) is None:
-                print(f'Unable to construct a valid molecule from < {smi} >')
-                return np.nan
+    def get_emb(smiles, decimals: int):
 
-            fp = np.round(np.fromiter(Descriptors.CalcMolDescriptors(mol, silent=False, missingVal=np.nan).values(), dtype=np.float64), decimals)
-            return fp
+        tokens = tokenizer(smiles, return_tensors='pt', padding=True, truncation=True, max_length=1024)
+        with torch.no_grad():
+            emb = model(**tokens).last_hidden_state.mean(dim=1).squeeze().numpy()
+        return np.round(emb, decimals)
 
-        except Exception as e:
-            print(f'Unable to process < {smi} > due to: \n{e}')
-            return np.nan
-
-    if isinstance(smiles, str):
-        return get_embedding(smiles)
-
-    if isinstance(smiles, list) and all(isinstance(smi, str) for smi in smiles):
-        return [get_embedding(smi) for smi in smiles]
-
-    print(f'Expected < smiles > to be str or list, received < {type(smiles)} > instead')
-    return np.nan
-
-
-def dataframe_2_rdkit(df: Union[pd.DataFrame, pl.DataFrame], smiles_col: str = 'SMILES', descriptor_col: str = 'RDKit',
-                      decimals: int = 5):
-    """
-    Convert SMILES in dataframe to RDKit descriptors.
-
-    Parameters
-    ----------
-    df : Union[pd.DataFrame, pl.DataFrame]
-        A pandas/polars DataFrame with data.
-    smiles_col : str, optional
-        Name of column with SMILES.
-    descriptor_col : str, optional
-        Name of column to which add calculated descriptors.
-    decimals: int
-        Number of decimals to keep.
-
-    Returns
-    -------
-    df : Union[pd.DataFrame, pl.DataFrame]
-        A pandas/polars Dataframe with added RDKit descriptors.
-        If 'dense' is set to False, returns a numpy array with indices of non-zero elements.
-    """
-
-    if isinstance(df, pd.DataFrame):
-        df[descriptor_col] = smiles_2_rdkit(df[smiles_col].tolist(), decimals=decimals)
-        return df
-    elif isinstance(df, pl.DataFrame):
-        df = df.with_columns(pl.Series(descriptor_col, smiles_2_rdkit(df[smiles_col].to_list(), decimals=decimals)))
-        return df
-    else:
-        raise TypeError(f"Expected df to be either polars or pandas DataFrame, got {type(df)} instead.")
-
-
-def smiles_2_chemberta(smiles: Union[str, List[str]], decimals: int = 5):
-    """
-    Parameters
-    ----------
-    smiles: Union[str, List[str]]
-        A valid SMILES or list of valid SMILES strings.
-    decimals: int
-        Number of decimals to keep.
-
-    Returns
-    -------
-    array: Union[np.ndarray, List[np.ndarray]]
-        A np.ndarray or list of np.ndarrays.
-    """
     try:
         from transformers import AutoTokenizer, AutoModel, logging
     except ImportError:
@@ -437,73 +641,212 @@ def smiles_2_chemberta(smiles: Union[str, List[str]], decimals: int = 5):
 
     logging.set_verbosity_error()
 
-    tokenizer = AutoTokenizer.from_pretrained('DeepChem/ChemBERTa-100M-MLM')
-    model = AutoModel.from_pretrained('DeepChem/ChemBERTa-100M-MLM')
+    tokenizer = joblib.load(files('novami.files').joinpath('ChemBERTa-tokenizer.joblib'))
+    model = joblib.load(files('novami.files').joinpath('ChemBERTa-model.joblib'))
     model.eval()
 
-    def get_embeddings(smi: str):
-
-        try:
-            tokens = tokenizer(smi, return_tensors='pt', padding=True, truncation=True, max_length=512)
-            with torch.no_grad():
-                output = model(**tokens).last_hidden_state.mean(dim=1).squeeze().numpy()
-            return np.round(output, decimals)
-
-        except Exception as e:
-            print(f'Unable to process < {smi} > due to: \n{e}')
+    if isinstance(smiles, str):
+        if Chem.MolFromSmiles(smiles) is None:
+            print(f'Unable to construct a valid molecule from < {smiles} >')
             return np.nan
 
-    if isinstance(smiles, str):
-        return get_embeddings(smiles)
+        try:
+            return get_emb(smiles=smiles, decimals=decimals)
+        except Exception as e:
+            print(f'Unable to process < {smiles} > due to: \n{e}')
+            return np.nan
 
-    if isinstance(smiles, list) and all(isinstance(smi, str) for smi in smiles):
-        return [get_embeddings(smi) for smi in smiles]
+    elif isinstance(smiles, list) or isinstance(smiles, np.ndarray):
+        mols = [Chem.MolFromSmiles(smi) for smi in smiles]
+        if any([mol is None for mol in mols]):
+            print(f"At least one valid molecule cannot be constructed from provided SMILES")
+            return [np.nan] * len(mols)
 
-    print(f'Expected < smiles > to be str or list, received < {type(smiles)} > instead')
-    return np.nan
+        try:
+            return [get_emb(smiles=smi, decimals=decimals) for smi in smiles]
+        except Exception as e:
+            print(f'Unable to process at least one SMILES due to: \n{e}')
+            return np.nan * len(mols)
+
+    else:
+        raise TypeError(f"Expected smiles to be str or Union[List[str], np.ndarray[str]], got {type(smiles)} instead")
 
 
-def dataframe_2_chemberta(df: Union[pd.DataFrame, pl.DataFrame], smiles_col: str = 'SMILES', descriptor_col: str = 'ChemBERTa', decimals: int = 5):
+def dataframe_2_chemberta(df: pl.DataFrame, smiles_col: str = 'SMILES', descriptor_col: str = 'ChemBERTa',
+                          decimals: int = 5, n_jobs: int = 1, batch_size: int = 512 ):
     """
-    Convert SMILES in pandas/polars DataFrame to ChemBERTa embeddings.
+    Convert SMILES in a polars DataFrame to ChemBERTa embeddings.
 
     Parameters
     ----------
-    df : Union[pd.DataFrame, pl.DataFrame]
-        A pandas/polars DataFrame with data.
+    df : pl.DataFrame
+        A polars DataFrame.
     smiles_col : str
         Name of column with SMILES.
     descriptor_col : str
         Name of column to which add calculated descriptors.
     decimals: int
         Number of decimals to keep.
+    n_jobs: int, optional
+        Number of cores to use for calculations.
+    batch_size: int, optional
+        Number of SMILES per batch.
 
     Returns
     -------
-    df : Union[pd.DataFrame, pl.DataFrame]
-        A pandas/polars Dataframe with added column holding CDDD descriptors for given SMILES.
+    df : pl.DataFrame
+        A polars Dataframe with added ChemBERTa column.
     """
+
     try:
         from transformers import AutoTokenizer, AutoModel, logging
     except ImportError:
         raise ImportError("Function < dataframe_2_chemberta > requires < transformers > library. Please install it "
                           "with < pip install transformers >")
 
-    if isinstance(df, pd.DataFrame):
-        df[descriptor_col] = smiles_2_chemberta(df[smiles_col].tolist(), decimals=decimals)
-        return df
-    elif isinstance(df, pl.DataFrame):
-        df = df.with_columns(pl.Series(descriptor_col, smiles_2_chemberta(df[smiles_col].to_list(), decimals=decimals)))
-        return df
-    else:
-        raise TypeError(f"Expected df to be either polars or pandas DataFrame, got {type(df)} instead.")
+    if not os.path.isfile(str(files('novami.files').joinpath('ChemBERTa-tokenizer.joblib'))):
+        raise FileNotFoundError(f"ChemBERTa-tokenizer.joblib not found. Please call get_chemberta first.")
+    if not os.path.isfile(str(files('novami.files').joinpath('ChemBERTa-model.joblib'))):
+        raise FileNotFoundError(f"ChemBERTa-model.joblib not found. Please call get_chemberta first.")
 
+    smiles = list(set(df[smiles_col].to_list()))
+    n_batches = math.ceil(len(smiles) / batch_size)
+    smiles_batches = np.array_split(smiles, n_batches)
+
+    embs = Parallel(n_jobs=n_jobs, verbose=1, timeout=60, backend='loky')(
+        delayed(smiles_2_chemberta)(smiles=smi, decimals=decimals) for smi in smiles_batches
+    )
+
+    embs = chain.from_iterable(embs)
+
+    smiles_df = pl.DataFrame({
+        'SMILES': smiles,
+        descriptor_col: embs
+    })
+
+    df = df.join(smiles_df, on=smiles_col, how='left')
+
+    return df
+
+
+def get_chemberta():
+    try:
+        from transformers import AutoTokenizer, AutoModel, logging
+    except ImportError:
+        raise ImportError("Function < dataframe_2_chemberta > requires < transformers > library. Please install it "
+                          "with < pip install transformers >")
+
+    tokenizer = AutoTokenizer.from_pretrained('DeepChem/ChemBERTa-100M-MLM')
+    model = AutoModel.from_pretrained('DeepChem/ChemBERTa-100M-MLM')
+
+    joblib.dump(tokenizer, str(files('novami.files').joinpath('ChemBERTa-tokenizer.joblib')))
+    joblib.dump(model, str(files('novami.files').joinpath('ChemBERTa-model.joblib')))
+
+
+def smiles_2_mapc(smiles: Union[str, List[str], np.ndarray[str]], radius: int = 2, nbits: int = 1024):
+    """
+    Convert SMILES to MAPC descriptors.
+
+    Parameters
+    ----------
+    smiles: Union[str, List[str], np.ndarray[str]]
+        A valid SMILES or list of valid SMILES strings.
+    radius: int, optional
+        The radius parameter for MAPC calculation. Default is 2.
+    nbits: int, optional
+        The length of the FP. Default is 1024.
+
+    Returns
+    -------
+    Union[np.ndarray, List[np.ndarray]]
+    """
+    try:
+        from mapchiral.mapchiral import encode
+    except ImportError:
+        raise ImportError("Function < smiles_2_mapc > requires < mapchiral > library. Please install it "
+                          "with < pip install mapchiral >")
+
+    if isinstance(smiles, str):
+        if (mol := Chem.MolFromSmiles(smiles)) is None:
+            print(f'Unable to construct a valid molecule from < {smiles} >')
+            return np.nan
+
+        return encode(mol, max_radius=radius, n_permutations=nbits)
+
+    elif isinstance(smiles, list) or isinstance(smiles, np.ndarray):
+        mols = [Chem.MolFromSmiles(smi) for smi in smiles]
+        if any([mol is None for mol in mols]):
+            print(f"At least one valid molecule cannot be constructed from provided SMILES")
+            return [np.nan] * len(mols)
+
+        return [encode(mol, max_radius=radius, n_permutations=nbits) for mol in mols]
+
+    else:
+        raise TypeError(f"Expected smiles to be str or Union[List[str], np.ndarray[str]], got {type(smiles)} instead")
+
+
+def dataframe_2_mapc(df: pl.DataFrame, smiles_col: str = 'SMILES', descriptor_col: str = 'MAPC',
+                     radius: int = 2, nbits: int = 1024, n_jobs: int = 1, batch_size: int = 512):
+    """
+    Convert SMILES in a DataFrame to MAPC (MAP Chiral) fingerprints.
+
+    Parameters
+    ----------
+    df : pl.DataFrame
+        A polars DataFrame.
+    smiles_col : str, optional
+        Name of the column containing SMILES strings.
+    descriptor_col : str, optional
+        Name of the column to store calculated fingerprints. Default is 'MAPC'.
+    radius : int, optional
+        The maximum radius for MAPC calculation. Default is 2.
+    nbits : int, optional
+        The number of permutations (fingerprint length). Default is 1024.
+    n_jobs: int, optional
+        Number of cores to use for calculations.
+    batch_size: int, optional
+        Number of SMILES per batch.
+
+    Returns
+    -------
+    df : pl.DataFrame
+        A polars Dataframe with added MAPC column.
+    """
+
+    try:
+        from mapchiral.mapchiral import encode
+    except ImportError:
+        raise ImportError("Function < dataframe_2_mapc > requires < mapchiral > library. Please install it "
+                          "with < pip install mapchiral >")
+
+    smiles = list(set(df[smiles_col].to_list()))
+    n_batches = math.ceil(len(smiles) / batch_size)
+    smiles_batches = np.array_split(smiles, n_batches)
+
+    fps = Parallel(n_jobs=n_jobs, verbose=1, timeout=60, backend='loky')(
+        delayed(smiles_2_mapc)(smiles=smi, radius=radius, nbits=nbits) for smi in smiles_batches
+    )
+
+    fps = chain.from_iterable(fps)
+
+    smiles_df = pl.DataFrame({
+        'SMILES': smiles,
+        descriptor_col: fps
+    })
+
+    df = df.join(smiles_df, on=smiles_col, how='left')
+
+    return df
+
+# ============ #
+# Pain section #
+# ============ #
 
 def dataframe_2_mordred(df: Union[pd.DataFrame, pl.DataFrame], smiles_col: str = 'SMILES', desc_col: str = 'Mordred',
                         path_source: str = f'src/src_files/mordred_paths.json', decimals: int = 5):
     """
     Convert SMILES in dataframe to Mordred descriptors.
-    TODO: automated setup possibility
+    TODO: Update similar to other functions once the osmordred package works
 
     Parameters
     ----------
@@ -562,7 +905,7 @@ def dataframe_2_cddd(df: Union[pd.DataFrame, pl.DataFrame], cddd_paths: str, smi
                      descriptor_col: str = 'CDDD', n_cpus: int = 4, decimals: int = 5):
     """
     Convert SMILES in a DataFrame to CDDD descriptors.
-    TODO: automated setup possibility
+    TODO: This already
 
     Parameters
     ----------
@@ -617,88 +960,3 @@ def dataframe_2_cddd(df: Union[pd.DataFrame, pl.DataFrame], cddd_paths: str, smi
         df = pl.from_pandas(df)
 
     return df
-
-
-def smiles_2_mapc(smiles: Union[str, List[str]], radius: int = 2, nbits: int = 1024):
-    """
-    Parameters
-    ----------
-    smiles: Union[str, List[str]]
-        A valid SMILES or list of valid SMILES strings.
-    radius: int, optional
-        The radius parameter for MAPC calculation. Default is 2.
-    nbits: int, optional
-        The length of the FP. Default is 1024.
-
-    Returns
-    -------
-    array: Union[np.ndarray, List[np.ndarray]]
-        A np.ndarray or list of np.ndarrays.
-    """
-    try:
-        from mapchiral.mapchiral import encode
-    except ImportError:
-        raise ImportError("Function < smiles_2_mapc > requires < mapchiral > library. Please install it "
-                          "with < pip install mapchiral >")
-
-    def get_embedding(smi: str):
-        try:
-            if (mol := Chem.MolFromSmiles(smi)) is None:
-                print(f'Unable to construct a valid molecule from < {smi} >')
-                return np.nan
-
-            fp = encode(mol, max_radius=radius, n_permutations=nbits)
-            return fp
-
-        except Exception as e:
-            print(f'Unable to process < {smi} > due to: \n{e}')
-            return np.nan
-
-    if isinstance(smiles, str):
-        return get_embedding(smiles)
-
-    if isinstance(smiles, list) and all(isinstance(smi, str) for smi in smiles):
-        return [get_embedding(smi) for smi in smiles]
-
-    print(f'Expected < smiles > to be str or list, received < {type(smiles)} > instead')
-    return np.nan
-
-
-def dataframe_2_mapc(df: Union[pd.DataFrame, pl.DataFrame], smiles_col: str = 'SMILES', descriptor_col: str = 'MAPC',
-    radius: int = 2, nbits: int = 1024):
-    """
-    Convert SMILES in a DataFrame to MAPC (MAP Chiral) fingerprints.
-
-    Parameters
-    ----------
-    df : Union[pd.DataFrame, pl.DataFrame]
-        A pandas or polars DataFrame containing molecular data.
-    smiles_col : str, optional
-        Name of the column containing SMILES strings. Default is 'SMILES'.
-    descriptor_col : str, optional
-        Name of the column to store calculated fingerprints. Default is 'MAPC'.
-    radius : int, optional
-        The maximum radius for MAPC calculation. Default is 2.
-    nbits : int, optional
-        The number of permutations (fingerprint length). Default is 1024.
-
-    Returns
-    -------
-    df : Union[pd.DataFrame, pl.DataFrame]
-        The input DataFrame with an added column containing MAPC fingerprints.
-    """
-    
-    try:
-        from mapchiral.mapchiral import encode
-    except ImportError:
-        raise ImportError("Function < dataframe_2_mapc > requires < mapchiral > library. Please install it "
-                          "with < pip install mapchiral >")
-
-    if isinstance(df, pd.DataFrame):
-        df[descriptor_col] = smiles_2_mapc(df[smiles_col].tolist(), radius=radius, nbits=nbits)
-        return df
-    elif isinstance(df, pl.DataFrame):
-        df = df.with_columns(pl.Series(descriptor_col, smiles_2_mapc(df[smiles_col].to_list(), radius=radius, nbits=nbits)))
-        return df
-    else:
-        raise TypeError(f"Expected df to be either polars or pandas DataFrame, got {type(df)} instead.")
