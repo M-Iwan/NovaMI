@@ -445,6 +445,61 @@ class DataTransformer:
 
         return x_array
 
+    def transform_df(self, df: pl.DataFrame, features_col: str):
+        """
+        Transform data in a DataFrame by applying all enabled preprocessing steps.
+
+        Parameters
+        -----------
+        df: pl.DataFrame
+            A Polars DataFrame with features to transform.
+        features_col: str
+            The name of the column with features.
+
+        Returns
+        --------
+        df: pl.DataFrame
+            Initial DataFrame with transformed features.
+        """
+        x_array = np.vstack(df[features_col].to_numpy())
+
+        x_array = self.validate_features(x_array)
+        x_array = self.transform(x_array)
+
+        df = df.with_columns(
+            pl.Series(features_col, [array.reshape(-1) for array in np.vsplit(x_array, x_array.shape[0])])
+        )
+
+        return df
+
+
+    def fit_transform_df(self, df: pl.DataFrame, features_col: str):
+        """
+        Fit and transform data in a DataFrame by applying all enabled preprocessing steps.
+
+        Parameters
+        -----------
+        df: pl.DataFrame
+            A Polars DataFrame with features to transform.
+        features_col: str
+            The name of the column with features.
+
+        Returns
+        --------
+        df: pl.DataFrame
+            Initial DataFrame with transformed features.
+        """
+        x_array = np.vstack(df[features_col].to_numpy())
+
+        x_array = self.validate_features(x_array)
+        x_array = self.fit_transform(x_array)
+
+        df = df.with_columns(
+            pl.Series(features_col, [array.reshape(-1) for array in np.vsplit(x_array, x_array.shape[0])])
+        )
+
+        return df
+
 
 def get_transformer_params(features: str):
     """
