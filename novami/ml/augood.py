@@ -119,7 +119,7 @@ def good_curve(df: Union[pd.DataFrame, pl.DataFrame], smiles_col: str, cluster_f
                     threshold=threshold,
                     n_jobs=n_jobs
                 )[[smiles_col, "Cluster"]]
-                joblib.dump(cluster_df, cluster_path)
+                joblib.dump(clustered_df, cluster_path)
                 thr_df = df.join(clustered_df, on=smiles_col, how='left')
 
         except Exception as e:
