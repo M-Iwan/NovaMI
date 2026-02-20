@@ -124,7 +124,7 @@ def good_curve(df: Union[pd.DataFrame, pl.DataFrame], smiles_col: str, cluster_f
 
         except Exception as e:
             log(f"Unable to cluster data at threshold < {threshold:.2f} > due to:\n{e}")
-            continue
+            break
 
         if evaluation == 'train-test':
 
@@ -140,7 +140,7 @@ def good_curve(df: Union[pd.DataFrame, pl.DataFrame], smiles_col: str, cluster_f
             except Exception as e:
                 log(f"Unable to split data into train and test set with required tolerance < {step} > at"
                     f"threshold < {threshold:.2f} > due to:\n{e}")
-                continue
+                break
 
             log(f"\tEvaluating model")
             try:
@@ -160,7 +160,7 @@ def good_curve(df: Union[pd.DataFrame, pl.DataFrame], smiles_col: str, cluster_f
 
             except Exception as e:
                 log(f"Unable to evaluate the model at threshold < {threshold:.2f} > due to:\n{e}")
-                continue
+                break
 
             thr_scores = unit.metrics['Testing'].with_columns(
                 pl.lit(threshold).alias('Threshold')
@@ -181,7 +181,7 @@ def good_curve(df: Union[pd.DataFrame, pl.DataFrame], smiles_col: str, cluster_f
             except Exception as e:
                 log(f"Unable to split data into < {n_folds} > folds with required tolerance < {step} > at"
                     f"threshold < {threshold:.2f} > due to:\n{e}")
-                continue
+                break
 
             log(f"\tEvaluating model")
             try:
@@ -201,7 +201,7 @@ def good_curve(df: Union[pd.DataFrame, pl.DataFrame], smiles_col: str, cluster_f
 
             except Exception as e:
                 log(f"Unable to evaluate the model at threshold < {threshold:.2f} > due to:\n{e}")
-                continue
+                break
 
             thr_scores = ensemble.metrics["Testing"].with_columns(
                 pl.lit(threshold).alias('Threshold')
