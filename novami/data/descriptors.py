@@ -119,7 +119,7 @@ def dataframe_2_ecfp(df: pl.DataFrame, smiles_col: str = 'SMILES', descriptor_co
     fps = chain.from_iterable(fps)
 
     smiles_df = pl.DataFrame({
-        'SMILES': smiles,
+        smiles_col: smiles,
         descriptor_col: fps
     })
 
@@ -234,7 +234,7 @@ def dataframe_2_daylight(df: pl.DataFrame, smiles_col: str = 'SMILES', descripto
     fps = chain.from_iterable(fps)
 
     smiles_df = pl.DataFrame({
-        'SMILES': smiles,
+        smiles_col: smiles,
         descriptor_col: fps
     })
 
@@ -350,7 +350,7 @@ def dataframe_2_atompair(df: pl.DataFrame, smiles_col: str = 'SMILES', descripto
     fps = chain.from_iterable(fps)
 
     smiles_df = pl.DataFrame({
-        'SMILES': smiles,
+        smiles_col: smiles,
         descriptor_col: fps
     })
 
@@ -431,7 +431,7 @@ def dataframe_2_maccs(df: pl.DataFrame, smiles_col: str = 'SMILES', descriptor_c
     fps = chain.from_iterable(fps)
 
     smiles_df = pl.DataFrame({
-        'SMILES': smiles,
+        smiles_col: smiles,
         descriptor_col: fps
     })
 
@@ -517,7 +517,7 @@ def dataframe_2_klek(df: pl.DataFrame, smiles_col: str = 'SMILES', descriptor_co
     fps = chain.from_iterable(fps)
 
     smiles_df = pl.DataFrame({
-        'SMILES': smiles,
+        smiles_col: smiles,
         descriptor_col: fps
     })
 
@@ -603,7 +603,7 @@ def dataframe_2_rdkit(df: pl.DataFrame, smiles_col: str = 'SMILES', descriptor_c
     desc = chain.from_iterable(desc)
 
     smiles_df = pl.DataFrame({
-        'SMILES': smiles,
+        smiles_col: smiles,
         descriptor_col: desc
     })
 
@@ -720,7 +720,7 @@ def dataframe_2_chemberta(df: pl.DataFrame, smiles_col: str = 'SMILES', descript
     embs = chain.from_iterable(embs)
 
     smiles_df = pl.DataFrame({
-        'SMILES': smiles,
+        smiles_col: smiles,
         descriptor_col: embs
     })
 
@@ -830,7 +830,7 @@ def dataframe_2_mapc(df: pl.DataFrame, smiles_col: str = 'SMILES', descriptor_co
     fps = chain.from_iterable(fps)
 
     smiles_df = pl.DataFrame({
-        'SMILES': smiles,
+        smiles_col: smiles,
         descriptor_col: fps
     })
 
