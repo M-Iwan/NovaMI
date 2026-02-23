@@ -1,5 +1,6 @@
-from typing import Optional, Tuple, List
+from typing import Optional, Tuple, List, Dict
 from joblib import Parallel, delayed
+from itertools import chain
 
 import numpy as np
 import polars as pl
@@ -75,6 +76,8 @@ def k_smallest_rows(array: np.ndarray, k: int) -> np.ndarray:
     if array.shape[1] <= k:
         return array
 
+    array = np.nan_to_num(array, copy=True, nan=np.inf)
+
     col_idx = array.argpartition(k, axis=1)[:, :k]
     row_idx = np.arange(array.shape[0])[:, None]
     return array[row_idx, col_idx]
@@ -89,6 +92,8 @@ def k_smallest_columns(array: np.ndarray, k: int) -> np.ndarray:
     if array.shape[0] <= k:
         return array
 
+    array = np.nan_to_num(array, copy=True, nan=np.inf)
+
     row_idx = array.argpartition(k, axis=0)[:k, :]
     col_idx = np.arange(array.shape[1])[None, :]
     return array[row_idx, col_idx]
@@ -100,6 +105,8 @@ def k_largest_rows(array: np.ndarray, k: int) -> np.ndarray:
     """
     if array.shape[1] <= k:
         return array
+
+    array = np.nan_to_num(array, copy=True, nan=-np.inf)
 
     col_idx = array.argpartition(-k, axis=1)[:, -k:]
     row_idx = np.arange(array.shape[0])[:, None]
@@ -113,26 +120,29 @@ def k_largest_columns(array: np.ndarray, k: int) -> np.ndarray:
     if array.shape[0] <= k:
         return array
 
+    array = np.nan_to_num(array, copy=True, nan=-np.inf)
+
     row_idx = array.argpartition(-k, axis=0)[-k:, :]
     col_idx = np.arange(array.shape[1])[None, :]
     return array[row_idx, col_idx]
 
 
-def k_neighbors_distance(array_1: np.ndarray, array_2: np.ndarray, metric: str = 'jaccard', n_jobs: int = 1,
+def k_neighbors_distance(query_array: np.ndarray, ref_array: np.ndarray = None, metric: str = 'jaccard', n_jobs: int = 1,
                          nearest_k: Optional[List[int]] = None, furthest_k: Optional[List[int]] = None) -> pl.DataFrame:
     """
-    Calculate distance statistics between points in array_2 and array_1.
+    Calculate distance statistics between points in query and reference arrays. For each entry in query array,
+    calculates the minimum, mean, and maximum distance to all entries in reference array. If it is not passed,
+    a self-comparison is made (where distances to self are masked and not included).
 
-    For each entry in array_2, calculates the minimum, mean, and maximum distance to all entries in array_1.
     Additionally, computes the average distance to the k nearest and k furthest neighbors,
     where k values are specified in nearest_k and furthest_k parameters.
 
     Parameters
     ----------
-    array_1 : numpy.ndarray
-        Reference array, typically the training set.
-    array_2 : numpy.ndarray
+    query_array : np.ndarray
         Query array, typically the test set.
+    ref_array : np.ndarray, optional
+        Reference array, typically the training set. If not passed, self-comparison.
     metric : str, optional
         Distance metric to use. Default is 'jaccard'.
         See scipy.spatial.distance.cdist for a list of supported metrics.
@@ -148,19 +158,25 @@ def k_neighbors_distance(array_1: np.ndarray, array_2: np.ndarray, metric: str =
     Returns
     -------
     pl.DataFrame
-        A DataFrame containing distance statistics for each entry in array_2:
-        - 'Min': Minimum distance (equivalent to '1_nearest')
-        - 'Mean': Average distance to all entries in array_1
-        - 'Max': Maximum distance (equivalent to '1_furthest')
+        A DataFrame containing distance statistics for each entry in query array:
+        - 'Min': Minimum distance (equivalent to '1 Nearest')
+        - 'Mean': Average distance to all entries in reference array
+        - 'Max': Maximum distance (equivalent to '1 Furthest')
         - '{k} Nearest': Average distance to k nearest neighbors for each k in nearest_k
         - '{k} Furthest': Average distance to k furthest neighbors for each k in furthest_k
     """
+    self_comparison = False
 
-    if not isinstance(array_1, np.ndarray):
-        raise TypeError(f'Expected array_1 to be np.ndarray, got {type(array_1)} instead.')
+    if not isinstance(query_array, np.ndarray):
+        raise TypeError(f'Expected query array to be np.ndarray, got {type(query_array)} instead.')
 
-    if not isinstance(array_2, np.ndarray):
-        raise TypeError(f'Expected array_1 to be np.ndarray, got {type(array_2)} instead.')
+    # Self-comparison
+    if ref_array is not None:
+        if not isinstance(ref_array, np.ndarray):
+            raise TypeError(f'Expected reference array to be np.ndarray, got {type(ref_array)} instead.')
+    else:
+        ref_array = query_array # maybe deepcopy just to be safe?
+        self_comparison = True
 
     if metric not in ['braycurtis', 'canberra', 'chebychev', 'cityblock', 'correlation', 'cosine', 'dice',
                       'euclidean', 'hamming', 'minkowski', 'pnorm', 'jaccard', 'jensenshannon', 'kulczynski1',
@@ -200,12 +216,34 @@ def k_neighbors_distance(array_1: np.ndarray, array_2: np.ndarray, metric: str =
     max_n_k = np.max(nearest_k)
     max_f_k = np.max(furthest_k)
 
-    def neighbor_chunk(sub_array_1: np.ndarray, array_2: np.ndarray, metric: str, idx: int,
-                       max_n_k: int = 1, max_f_k: int = 1):
+    # array.shape[0] % n_jobs arrays of size array.shape[0]//n_jobs + 1
+    # and the rest of size array.shape[0] // n_jobs
 
-        chunk_distance = cdist(XA=sub_array_1, XB=array_2, metric=metric)
+    splits = np.array_split(ref_array, n_jobs)
 
-        chunk_means, chunk_size = chunk_distance.mean(axis=0), chunk_distance.shape[0]
+    # Only relevant when one array is passed
+    k_indices = {0: 0}
+    for k, size in enumerate([split.shape[0] for split in splits][:-1], 1):
+        k_indices[k] = k_indices[k-1] + size
+
+
+    def neighbor_chunk(query_array: np.ndarray, sub_ref_array: np.ndarray , metric: str, idx: int, k_indices: Dict,
+                       self_comparison: bool, max_n_k: int = 1, max_f_k: int = 1):
+
+        chunk_distance = cdist(XA=sub_ref_array, XB=query_array, metric=metric)
+
+        N = chunk_distance.shape[0]
+        M = chunk_distance.shape[1]
+        k = k_indices.get(idx)
+
+        if self_comparison:
+            chunk_distance[np.eye(N=N, M=M, k=k, dtype=bool)] = np.nan
+
+        # if self_comparison only has 1 compound in a group
+        if N > 1:
+            chunk_means, chunk_size = np.nanmean(chunk_distance, axis=0), N
+        else:
+            chunk_means, chunk_size = chunk_distance, 1
 
         # Find the k nearest/farthest neighbors for given entry
         nearest_distance = k_smallest_columns(chunk_distance, k=max_n_k)
@@ -214,8 +252,17 @@ def k_neighbors_distance(array_1: np.ndarray, array_2: np.ndarray, metric: str =
         return idx, chunk_means, chunk_size, nearest_distance, furthest_distance
 
     chunks = Parallel(n_jobs=n_jobs, backend='loky')(
-        delayed(neighbor_chunk)(sub_array_1, array_2, metric, idx, max_n_k, max_f_k)
-        for idx, sub_array_1 in enumerate(np.array_split(array_1, n_jobs))
+        delayed(neighbor_chunk)(
+            query_array=query_array,
+            sub_ref_array=sub_ref_array,
+            metric=metric,
+            idx=idx,
+            k_indices=k_indices,
+            self_comparison=self_comparison,
+            max_n_k=max_n_k,
+            max_f_k=max_f_k
+        )
+        for idx, sub_ref_array in enumerate(splits)
     )
 
     # A single chunk, no need to concatenate anything
@@ -251,6 +298,102 @@ def k_neighbors_distance(array_1: np.ndarray, array_2: np.ndarray, metric: str =
     )
 
     return df
+
+
+def group_k_neighbors_distance(df: pl.DataFrame, features_col: str, group_col: str, metric: str = 'jaccard',
+                               n_jobs: int = 1):
+    """
+    Calculate intra- and intergroup distance distribution. The group_col should contain either
+    integers or lists of integers.
+
+    Parameters
+    ----------
+    df: pl.DataFrame
+        A polars DataFrame
+    features_col: str
+        The name of the column with features to use for distance calculation
+    group_col: str
+        The name of the column with group assignments for comparison.
+    metric : str, optional
+        Distance metric to use. Default is 'jaccard'.
+        See scipy.spatial.distance.cdist for a list of supported metrics.
+    n_jobs : int, optional
+        Number of jobs for parallel processing. Default is 1.
+
+    Returns
+    -------
+    pl.DataFrame
+    """
+
+    req_cols = [features_col, group_col]
+    if missing_cols := [col for col in req_cols if col not in df.columns]:
+        raise KeyError(f"Missing required columns {missing_cols}")
+
+    # Assume each entry belongs to a single group
+    if isinstance(df[group_col].dtype, (pl.Int32, pl.Int64, pl.String)):
+        unique_groups = set(df[group_col].to_list())
+        print(f"Group column treated a Single-assignment")
+        group_type = 'Single'
+
+    # Assume each entry *might* belong to multiple groups
+    elif isinstance(df[group_col].dtype, pl.List):
+        unique_groups = set(chain.from_iterable(df[group_col].to_list()))
+        print(f"Group column treated a Multiple-assignment")
+        group_type = 'Multiple'
+
+    else:
+        raise TypeError(f"Expected the dtype of group_col to be either Int32, Int64, or String for single group"
+                        f"assignment, and pl.List for multi-group assignments. Got {df[group_col].dtype} "
+                        f"instead")
+
+    results = []
+
+    for group in unique_groups:
+        if group_type == 'Single':
+            query_array = np.vstack(df.filter(pl.col(group_col) == group)[features_col].to_numpy())
+            ref_array = np.vstack(df.filter(pl.col(group_col) != group)[features_col].to_numpy())
+        else:
+            query_array = np.vstack(df.filter(pl.col(group_col).list.contains(group))[features_col].to_numpy())
+            ref_array = np.vstack(df.filter(~pl.col(group_col).list.contains(group))[features_col].to_numpy())
+
+        # if ref_array is None, calculates distance to self :)
+        intra_knd = k_neighbors_distance(
+            query_array=query_array,
+            ref_array=None,
+            metric=metric,
+            n_jobs=n_jobs,
+        )
+
+        intra_df = pl.DataFrame({
+            "Scope": "Intra",
+            "Group": group,
+            "Aggregation": intra_knd.columns,
+            "Quantiles": [np.quantile(intra_knd[col].to_numpy(), np.linspace(0, 1, 11))
+                          for col in intra_knd.columns],
+        })
+
+        inter_knd = k_neighbors_distance(
+            query_array=query_array,
+            ref_array=ref_array,
+            metric=metric,
+            n_jobs=n_jobs,
+        )
+
+        inter_df = pl.DataFrame({
+            "Scope": "Inter",
+            "Group": group,
+            "Aggregation": inter_knd.columns,
+            "Quantiles": [np.quantile(inter_knd[col].to_numpy(), np.linspace(0, 1, 11))
+                          for col in inter_knd.columns],
+        })
+
+        results.append(pl.concat([intra_df, inter_df]))
+
+    if not results:
+        print("No results")
+        return None
+
+    return pl.concat(results)
 
 
 def list_similarity(string: str, target_strings: list, method: str = 'fuzzy', threshold: float = 0.75,
