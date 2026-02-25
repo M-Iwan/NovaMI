@@ -1,3 +1,12 @@
+# [0.3.4]: 25-02-2-26
+
+[Added]
+- Added support for calculating distance distribution to self in data.distance.k_neighbors_distance
+- Added wrapper around k_neighbors_distance that calculates them over groups: data.distance.group_k_neighbors_distance
+
+[Fixed]
+- Functions in data.descriptors now correctly parse provided < smiles_col > argument instead of setting it to "SMILES"
+
 # [0.3.3]: 19-02-2026
 
 [Added]
