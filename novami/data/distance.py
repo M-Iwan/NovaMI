@@ -177,6 +177,10 @@ def k_neighbors_distance(query_array: np.ndarray, ref_array: np.ndarray = None, 
     else:
         ref_array = query_array # maybe deepcopy just to be safe?
         self_comparison = True
+        max_n_jobs = max(query_array.shape[0] // 2, 1)
+        if n_jobs > max_n_jobs:
+            print(f"Query array too small for < {n_jobs} > jobs. {max_n_jobs} jobs will be used.")
+            n_jobs = max_n_jobs
 
     if metric not in ['braycurtis', 'canberra', 'chebychev', 'cityblock', 'correlation', 'cosine', 'dice',
                       'euclidean', 'hamming', 'minkowski', 'pnorm', 'jaccard', 'jensenshannon', 'kulczynski1',
@@ -216,16 +220,12 @@ def k_neighbors_distance(query_array: np.ndarray, ref_array: np.ndarray = None, 
     max_n_k = np.max(nearest_k)
     max_f_k = np.max(furthest_k)
 
-    # array.shape[0] % n_jobs arrays of size array.shape[0]//n_jobs + 1
-    # and the rest of size array.shape[0] // n_jobs
-
     splits = np.array_split(ref_array, n_jobs)
 
     # Only relevant when one array is passed
     k_indices = {0: 0}
     for k, size in enumerate([split.shape[0] for split in splits][:-1], 1):
         k_indices[k] = k_indices[k-1] + size
-
 
     def neighbor_chunk(query_array: np.ndarray, sub_ref_array: np.ndarray , metric: str, idx: int, k_indices: Dict,
                        self_comparison: bool, max_n_k: int = 1, max_f_k: int = 1):
@@ -239,17 +239,17 @@ def k_neighbors_distance(query_array: np.ndarray, ref_array: np.ndarray = None, 
         if self_comparison:
             chunk_distance[np.eye(N=N, M=M, k=k, dtype=bool)] = np.nan
 
-        # if self_comparison only has 1 compound in a group
-        if N > 1:
-            chunk_means, chunk_size = np.nanmean(chunk_distance, axis=0), N
-        else:
-            chunk_means, chunk_size = chunk_distance, 1
+        chunk_means = np.nanmean(chunk_distance, axis=0)
+        weights = np.full_like(chunk_means, N)
+
+        if self_comparison:
+            weights[k:k+N] = N - 1
 
         # Find the k nearest/farthest neighbors for given entry
         nearest_distance = k_smallest_columns(chunk_distance, k=max_n_k)
         furthest_distance = k_largest_columns(chunk_distance, k=max_f_k)
 
-        return idx, chunk_means, chunk_size, nearest_distance, furthest_distance
+        return idx, chunk_means, weights, nearest_distance, furthest_distance
 
     chunks = Parallel(n_jobs=n_jobs, backend='loky')(
         delayed(neighbor_chunk)(
@@ -277,8 +277,8 @@ def k_neighbors_distance(query_array: np.ndarray, ref_array: np.ndarray = None, 
 
         # Take weighted average of chunk-means to get the global mean
         means_array = np.vstack([chunk[1] for chunk in sorted_chunks])
-        means_sizes = np.array([chunk[2] for chunk in sorted_chunks])
-        mean_distances = np.average(means_array, axis=0, weights=means_sizes)
+        weights = np.vstack([chunk[2] for chunk in sorted_chunks])
+        mean_distances = np.average(means_array, axis=0, weights=weights)
 
         # Concatenate the results from each chunk
         nearest_array = np.vstack([chunk[3] for chunk in sorted_chunks])
