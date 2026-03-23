@@ -1,5 +1,9 @@
+from typing import List
+
 from torch import nn
 from torch_geometric.nn import GCNConv, SAGEConv, GINConv, GATConv, GATv2Conv, EdgeConv
+
+from novami.deep.modules import GNNModule, CNNModule, RNNModule
 
 
 def get_activation_fn(name: str) -> nn.Module:
@@ -78,7 +82,27 @@ def build_gnn_config():
             break
         print("Unsupported activation function. Try again.")
 
-    dropout = float(input("Dropout rate [0.0]: ") or 0.0)
+    while True:
+        try:
+            dropout = input("Enter dropout rate [0.1]: ").strip()
+            dropout = float(dropout) if dropout else 0.1
+            if 0.0 <= dropout < 1.0:
+                break
+            else:
+                print("Dropout rate must be between 0 and 1.")
+        except ValueError:
+            print("Invalid float. Try again.")
+
+    while True:
+        try:
+            batch_norm = input("Enter batch_norm [Y/N]: ").strip()
+            if batch_norm in ['Y', 'N']:
+                batch_norm = {"Y": True, "N": False}.get(batch_norm)
+                break
+            else:
+                print(f"Batch norm must be Y/N. Try again.")
+        except ValueError:
+            "Invalid answer. Try again."
 
     gnn_params = {
         'layer': layer_class,
@@ -87,7 +111,8 @@ def build_gnn_config():
         'input_dim': input_dim,
         'args': layer_args,
         'activation': activation,
-        'dropout': dropout
+        'dropout': dropout,
+        'batch_norm': batch_norm
     }
 
     if layer_type == 'attention':
@@ -182,6 +207,18 @@ def build_cnn_config():
         except ValueError:
             print("Invalid float. Try again.")
 
+    while True:
+        try:
+            batch_norm = input("Enter batch_norm [Y/N]: ").strip()
+            if batch_norm in ['Y', 'N']:
+                batch_norm = {"Y": True, "N": False}.get(batch_norm)
+                break
+            else:
+                print(f"Batch norm must be Y/N. Try again.")
+        except ValueError:
+            "Invalid answer. Try again."
+
+
     cnn_params = {
         'alphabet_len': alphabet_len,
         'embedding_dim': embedding_dim,
@@ -191,7 +228,8 @@ def build_cnn_config():
         'stride': stride,
         'pool_size': pool_size,
         'activation': activation,
-        'dropout': dropout
+        'dropout': dropout,
+        'batch_norm': batch_norm
     }
 
     print("\nCNN layer config complete.")
@@ -258,7 +296,7 @@ def build_rnn_config():
         'padding_idx': padding_idx,
         'layer': rnn_type,
         'hidden_size': hidden_size,
-        'max_len': max_len
+        'max_len': max_len,
     }
 
     print("\nRNN layer config complete.")
@@ -280,11 +318,15 @@ def build_lin_config():
             print("Invalid input. Try again.")
 
     while True:
-        batch_norm_input = input("Use batch normalization? (y/n) [y]: ").strip().lower() or 'y'
-        if batch_norm_input in ('y', 'n'):
-            batch_norm = batch_norm_input == 'y'
-            break
-        print("Enter 'y' or 'n'.")
+        try:
+            batch_norm = input("Enter batch_norm [Y/N]: ").strip()
+            if batch_norm in ['Y', 'N']:
+                batch_norm = {"Y": True, "N": False}.get(batch_norm)
+                break
+            else:
+                print(f"Batch norm must be Y/N. Try again.")
+        except ValueError:
+            "Invalid answer. Try again."
 
     available_activations = ['relu', 'leaky_relu', 'gelu', 'tanh', 'none']
     while True:
@@ -316,128 +358,3 @@ def build_lin_config():
 
     print("\nLinear layer config complete.")
     return linear_params
-
-
-def build_des_config():
-    print("=== Descriptors Layer Configuration ===")
-    configs = {}
-
-    print("Enter new descriptor names for linear layer configs.")
-
-    while True:
-        key = input("Enter descriptor name: ").strip()
-        if not key:
-            break
-
-        print(f"\nConfiguring linear layers for '{key}':")
-        config = build_lin_config()
-        configs[key] = config
-        print(f"Config for '{key}' saved.\n")
-
-    print("All linear layer configs collected.")
-    return configs
-
-
-def build_att_config():
-    print("=== Attention Layer Configuration ===")
-
-    # Attention size
-    while True:
-        try:
-            attn_size = int(input("Enter attention output size (attn_size): "))
-            if attn_size > 0:
-                break
-            else:
-                print("Must be positive integer.")
-        except ValueError:
-            print("Invalid integer. Try again.")
-
-    # Number of heads
-    while True:
-        try:
-            num_heads = int(input("Enter number of attention heads: "))
-            if num_heads > 0:
-                break
-            else:
-                print("Must be positive integer.")
-        except ValueError:
-            print("Invalid integer. Try again.")
-
-    # Dropout rate
-    while True:
-        try:
-            dropout = input("Enter dropout rate [0.0]: ").strip()
-            dropout = float(dropout) if dropout else 0.0
-            if 0.0 <= dropout < 1.0:
-                break
-            else:
-                print("Dropout must be between 0 and 1.")
-        except ValueError:
-            print("Invalid float. Try again.")
-
-    print("\nAttention layer config complete.")
-    return {
-        'attn_size': attn_size,
-        'num_heads': num_heads,
-        'dropout': dropout
-    }
-
-
-def config_model():
-    print("=== Model General Configuration ===")
-    device = input("Device cpu/cuda [cpu]: ").strip() or 'cpu'
-    task = input("Task (classification/regression) [classification]: ").strip() or 'classification'
-
-    while True:
-        try:
-            num_task = int(input("Number of tasks [1]: ").strip() or '1')
-            if num_task > 0:
-                break
-            else:
-                print("Must be positive integer.")
-        except ValueError:
-            print("Invalid integer.")
-
-    label_name = input("Label name [None]: ").strip() or None
-    weight_name = input("Weight name [None]: ").strip() or None
-    signature_name = input("Signature name [None]: ").strip() or None
-
-    while True:
-        try:
-            max_norm = float(input("Max norm [1.0]: ").strip() or '1.0')
-            if max_norm > 0:
-                break
-            else:
-                print("Must be positive number.")
-        except ValueError:
-            print("Invalid float.")
-
-    query_desc = input("Query description [Demo]: ").strip() or 'Demo'
-
-    gnn_params = build_gnn_config() if input("Add GNN layers? y/n") == "y" else None
-    cnn_params = build_cnn_config() if input("Add CNN layers? y/n") == "y" else None
-    rnn_params = build_rnn_config() if input("Add RNN layers? y/n") == "y" else None
-    des_params = build_des_config() if input("Add Desc layers? y/n") == "y" else None
-
-    att_params = build_att_config()
-    lin_params = build_lin_config()
-
-    final_config = {
-        'device': device,
-        'task': task,
-        'num_task': num_task,
-        'label_name': label_name,
-        'weight_name': weight_name,
-        'signature_name': signature_name,
-        'gnn_params': gnn_params,
-        'cnn_params': cnn_params,
-        'rnn_params': rnn_params,
-        'des_params': des_params,
-        'att_params': att_params,
-        'lin_params': lin_params,
-        'max_norm': max_norm,
-        'query_desc': query_desc
-    }
-
-    print("\nFinal configuration ready.")
-    return final_config
