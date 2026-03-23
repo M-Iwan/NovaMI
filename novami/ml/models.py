@@ -7,8 +7,10 @@ import numpy as np
 import polars as pl
 from scipy import stats
 from scipy.special import expit
-from sklearn.metrics import confusion_matrix, roc_auc_score, r2_score, mean_absolute_error, root_mean_squared_error
+from sklearn.metrics import (confusion_matrix, roc_auc_score, r2_score, mean_absolute_error, root_mean_squared_error,
+                             average_precision_score, brier_score_loss)
 
+from novami.ml.score import ece_score
 from novami.data.transform import DataTransformer
 
 
@@ -153,7 +155,7 @@ class ClassifierUnit(Unit):
         return y_score.reshape(-1)
 
     def evaluate(self, y_true: np.ndarray, y_pred: np.ndarray, y_score: np.ndarray,
-              sample_weight: Optional[np.ndarray] = None):
+                 sample_weight: Optional[np.ndarray] = None):
 
         def safe_div(numerator, denominator, default_=0.0):
             return numerator / denominator if denominator != 0 else default_
@@ -196,7 +198,10 @@ class ClassifierUnit(Unit):
             'HarmRS': np.round(safe_div(2 * rec * spec, rec + spec), 5),
             'F1 Score': np.round(safe_div(2 * TP, 2 * TP + FP + FN), 5),
             'ROC AUC': roc_auc,
-            'MCC': np.round(safe_div((TP * TN) - (FP * FN), np.sqrt((TP + FP) * (TP + FN) * (TN + FP) * (TN + FN))), 5)
+            'MCC': np.round(safe_div((TP * TN) - (FP * FN), np.sqrt((TP + FP) * (TP + FN) * (TN + FP) * (TN + FN))), 5),
+            'PRC AUC': np.round(average_precision_score(y_true=y_true, y_score=y_score, sample_weight=sample_weight), 5),
+            'Brier': np.round(brier_score_loss(y_true=y_true, y_score=y_score, sample_weight=sample_weight), 5),
+            'ECE': np.round(ece_score(y_true=y_true, y_score=y_score, sample_weight=sample_weight), 5)
         }
 
         df = pl.DataFrame(values).unpivot(variable_name='Metric', value_name='Value')
