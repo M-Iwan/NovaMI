@@ -300,8 +300,8 @@ def k_neighbors_distance(query_array: np.ndarray, ref_array: np.ndarray = None, 
     return df
 
 
-def group_k_neighbors_distance(df: pl.DataFrame, features_col: str, group_col: str, metric: str = 'jaccard',
-                               n_jobs: int = 1):
+def group_k_neighbors_distance(df: pl.DataFrame, features_col: str, group_col: str, metric: str = 'jaccard', n_jobs: int = 1,
+                               nearest_k: Optional[List[int]] = None, furthest_k: Optional[List[int]] = None):
     """
     Calculate intra- and intergroup distance distribution. The group_col should contain either
     integers or lists of integers.
@@ -319,6 +319,12 @@ def group_k_neighbors_distance(df: pl.DataFrame, features_col: str, group_col: s
         See scipy.spatial.distance.cdist for a list of supported metrics.
     n_jobs : int, optional
         Number of jobs for parallel processing. Default is 1.
+    nearest_k : Optional[List[int]] or int, optional
+        List of k values for which to calculate average distance to the k nearest neighbors.
+        Can be a single integer or a list of integers. Default is None, which is equivalent to [1].
+    furthest_k : Optional[List[int]] or int, optional
+        List of k values for which to calculate average distance to the k furthest neighbors.
+        Can be a single integer or a list of integers. Default is None, which is equivalent to [1].
 
     Returns
     -------
@@ -362,14 +368,15 @@ def group_k_neighbors_distance(df: pl.DataFrame, features_col: str, group_col: s
             ref_array=None,
             metric=metric,
             n_jobs=n_jobs,
+            nearest_k=nearest_k,
+            furthest_k=furthest_k
         )
 
         intra_df = pl.DataFrame({
             "Scope": "Intra",
             "Group": group,
             "Aggregation": intra_knd.columns,
-            "Quantiles": [np.quantile(intra_knd[col].to_numpy(), np.linspace(0, 1, 11))
-                          for col in intra_knd.columns],
+            "Values": [intra_knd[col] for col in intra_knd.columns]
         })
 
         inter_knd = k_neighbors_distance(
@@ -377,14 +384,15 @@ def group_k_neighbors_distance(df: pl.DataFrame, features_col: str, group_col: s
             ref_array=ref_array,
             metric=metric,
             n_jobs=n_jobs,
+            nearest_k=nearest_k,
+            furthest_k=furthest_k
         )
 
         inter_df = pl.DataFrame({
             "Scope": "Inter",
             "Group": group,
             "Aggregation": inter_knd.columns,
-            "Quantiles": [np.quantile(inter_knd[col].to_numpy(), np.linspace(0, 1, 11))
-                          for col in inter_knd.columns],
+            "Values": [inter_knd[col] for col in inter_knd.columns]
         })
 
         results.append(pl.concat([intra_df, inter_df]))
