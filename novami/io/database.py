@@ -1,14 +1,11 @@
-from typing import List
-
-import numpy as np
-import pandas as pd
+import polars as pl
 from rdkit import Chem
 from rdkit.Chem import PandasTools
 
-from novami.standardize.duplicates import process_duplicates
+from novami.standardize.duplicates import mad_duplicates, check_unit_error
 
 
-def preprocess_binding_db(file_path: str) -> pd.DataFrame:
+def preprocess_binding_db(file_path: str, range_threshold: float = 1.0, z_threshold: float = 3.5) -> pl.DataFrame:
     """
     Preprocess a BindingDB SDF file to create a standardized DataFrame of compounds with IC50 values.
 
@@ -16,10 +13,14 @@ def preprocess_binding_db(file_path: str) -> pd.DataFrame:
     ----------
     file_path : str
         Path to the BindingDB SDF file to be processed.
+    range_threshold: float
+        Maximum difference between values to consider them consistent. Default is 1.0
+    z_threshold: float
+        Maximum threshold for MAD outlier detection. Default is 3.5
 
     Returns
     -------
-    pd.DataFrame
+    pl.DataFrame
         A cleaned DataFrame containing molecular information and standardized IC50 values.
         The DataFrame includes the following columns:
         - InChI: InChI representation of the molecule
@@ -41,90 +42,105 @@ def preprocess_binding_db(file_path: str) -> pd.DataFrame:
     2. Converting molecular structures to SMILES format
     3. Standardizing IC50 units to μM and calculating pIC50
     4. Filtering for entries with exact values (not inequalities)
-    5. Identifying and handling duplicate entries:
+    5. Identifying and handling duplicate entries using MAD values
     """
 
-    def check_duplicates(value: float, other_values: List[float]): # based on pChEMBL_Value
-        if value in other_values:
-            return 'Duplicate'
-        if any([value + 3 in other_values, value - 3 in other_values, value + 6 in other_values, value - 6 in other_values]):
-            return 'Unit Error'
-        else:
-            return 'Cool&Good'
-
-    def mark_duplicates(df: pd.DataFrame) -> pd.DataFrame:
-        has_duplicate = []
-
-        for idx, row in df.iterrows():
-            value = row['Value'].value
-            smiles = row['SMILES'].value
-
-            other_values = df[df['SMILES'] == smiles]['Value'].drop(idx).tolist()
-
-            has_duplicate.append(check_duplicates(value, other_values))
-
-        df['Issues'] = has_duplicate
-        return df
-
     def convert_ic50(value: str):
-        value = value.lower().strip()
-        if value.startswith(('>', '<')):
-            relation = value[0]
-            value = value[1:]
+        """
+        The IC50 is in format [<,>][Value]
+        """
+        if value == "" or value is None:
+            value, relation = None, None
         else:
-            relation = '='
-        try:
-            value = float(value) / 1000
-        except ValueError:
-            print(f'Cannot convert {value} to float')
-        return value, 'uM', relation
+            relation = value[0] if value[0] in ["<", ">"] else "="
+            value = value[1:]
+            try:
+                value = float(value) / 1000
+            except ValueError:
+                f'Cannot convert {value} to float'
+        return {
+            "Value": value,
+            "Unit": "uM",
+            "Relation": relation
+        }
 
-    file_name = file_path.split('/')[-1]
     df = PandasTools.LoadSDF(file_path, molColName='Mol')
+    df['SMILES'] = df['Mol'].apply(lambda mol: Chem.MolToSmiles(mol))
+    df = df.drop(columns='Mol')
+    df = pl.from_pandas(df)
 
-    df = df[['Ligand InChI', 'Ligand InChI Key', 'Target Name', 'Ki (nM)', 'IC50 (nM)', 'Kd (nM)', 'EC50 (nM)',
-             'ChEMBL ID of Ligand', 'PDB ID(s) for Ligand-Target Complex', 'Mol']]
+    df = (df
+        .select(['SMILES', 'Ligand InChI', 'Ligand InChI Key', 'Target Name', 'Ki (nM)', 'IC50 (nM)', 'Kd (nM)', 'EC50 (nM)',
+            'ChEMBL ID of Ligand', 'PDB ID(s) for Ligand-Target Complex'])
+        .rename({
+            'Ligand InChI': 'InChI',
+            'Ligand InChI Key': 'InChI_key',
+            'Target Name': 'Protein',
+            'ChEMBL ID of Ligand': 'ChEMBL ID',
+            'PDB ID(s) for Ligand-Target Complex': 'PDB_ID'})
+        .drop(
+            ['Ki (nM)', 'Kd (nM)', 'EC50 (nM)'])
+    )
 
-    df = df.rename(columns=
-                    {'Ligand InChI': 'InChI',
-                    'Ligand InChI Key': 'InChI_key',
-                    'Target Name': 'Protein',
-                    'ChEMBL ID of Ligand': 'ChEMBL ID',
-                    'PDB ID(s) for Ligand-Target Complex': 'PDB_ID'}
-                    )
+    df = (df
+        .with_columns([
+            pl.col(col_name).replace(old='', new=None) for col_name in df.columns
+        ])
+        .drop_nulls(
+            subset=['IC50 (nM)', 'SMILES']
+        )
+    )
 
-    df['SMILES'] = df['Mol'].apply(Chem.MolToSmiles)
+    df = df.with_columns(
+        pl.col("IC50 (nM)").map_elements(
+            lambda entry: convert_ic50(entry),
+            return_dtype=pl.Struct({
+                "Value": pl.Float64,
+                "Unit": pl.String,
+                "Relation": pl.String
+            })
+        ).alias("_expanded")
+    ).unnest("_expanded")
 
-    # we don't need Mol anymore, the others are usually missing
-    df = df.drop(columns=['Mol', 'Ki (nM)', 'Kd (nM)', 'EC50 (nM)'])
-    df = df.replace('', pd.NA)
-    df['File'] = file_name.split('.')[0].replace('_', '.')
+    df = (df
+        .with_columns(
+            ((pl.col("Value")/10**6).log10()*(-1)).alias("pIC50")
+        )
+        .filter(pl.col("Relation") == "=")
+    )
 
-    df = df.dropna(subset=['IC50 (nM)', 'SMILES'], how='any').reset_index(drop=True)
+    # Remove normal duplicated values
+    er_df = df.filter(~df.select(["SMILES", "pIC50"]).is_duplicated())
 
-    # Convert IC50 to numerical and apply ChEMBL formatting; the Value is in uM
-    df[['Value', 'Unit', 'Relation']] = df['IC50 (nM)'].apply(lambda value: pd.Series(convert_ic50(value)))
-    df['pIC50'] = df['Value'].apply(lambda value: -np.log10(value/10**6))
+    # Remove measurements differing by 3/6/9 log10 units
+    er_df = (er_df
+        .group_by("SMILES")
+        .agg(
+            pl.col("pIC50").map_batches(
+                lambda ser: check_unit_error(ser.to_list()),
+                return_dtype=pl.Boolean,
+                returns_scalar=True
+            ).alias("UnitError")
+        )
+        .filter(~pl.col("UnitError"))
+    )
 
-    # Only use entries with known values
-    df = df[df.Relation == '='].reset_index(drop=True)
+    df = df.join(er_df, how='inner', on='SMILES').drop("UnitError")
 
-    # Remove duplicated entries
-    df = mark_duplicates(df)
+    df = mad_duplicates(
+        df=df,
+        smiles_col="SMILES",
+        range_threshold=range_threshold,
+        z_threshold=z_threshold
+    )
 
-    df = df[df['Issues'] != 'Unit Error'].reset_index(drop=True)  # remove the 3/6 differing ones
+    df = df.filter(pl.col("pIC50").is_not_null())
 
-    g_df = df[df['Issues'] == 'Cool&Good']
-    d_df = df[df['Issues'] == 'Duplicate']
-
-    pd_df = d_df.groupby('SMILES')[d_df.columns].apply(process_duplicates).reset_index(drop=True)
-
-    df = pd.concat([g_df, pd_df], ignore_index=True)
-    df = df.drop(columns=['IC50 (nM)', 'Issues'])
     return df
 
 
-def preprocess_chembl(df: pd.DataFrame, activity_type: str = 'IC50') -> pd.DataFrame:
+def preprocess_chembl(df: pl.DataFrame, activity_type: str = 'IC50', range_threshold: float = 1.0,
+                      z_threshold: float = 3.5) -> pl.DataFrame:
     """
     Preprocess ChEMBL data to obtain standardized bioactivity measurements.
 
@@ -135,17 +151,18 @@ def preprocess_chembl(df: pd.DataFrame, activity_type: str = 'IC50') -> pd.DataF
 
     Parameters
     ----------
-    df : pd.DataFrame
-        Input DataFrame containing ChEMBL data with columns such as 'Standard Type',
-        'Smiles', 'pChEMBL Value', etc.
-
+    df : pl.DataFrame
+        Input DataFrame containing ChEMBL data
     activity_type : str, optional
         Type of activity to filter for. Must be one of 'IC50', 'Kd', or 'Ki'.
-        Default is 'IC50'.
+    range_threshold: float
+        Maximum difference between values to consider them consistent. Default is 1.0
+    z_threshold: float
+        Maximum threshold for MAD outlier detection. Default is 3.5
 
     Returns
     -------
-    pd.DataFrame
+    pl.DataFrame
         A cleaned and filtered DataFrame containing standardized bioactivity data.
         Returns an empty DataFrame if no entries meet the filtering criteria.
 
@@ -161,10 +178,7 @@ def preprocess_chembl(df: pd.DataFrame, activity_type: str = 'IC50') -> pd.DataF
        - Available pChEMBL values
     3. Excluding measurements from protein variants or mutations
     4. Restricting to assays using human (Homo sapiens) cell lines
-    5. Converting SMILES to canonical RDKit representation
-    6. Handling duplicates
-
-    The function prints progress information at each filtering step.
+    5. Handling duplicates
     """
 
     if activity_type not in ['IC50', 'Kd', 'Ki']:
@@ -173,12 +187,11 @@ def preprocess_chembl(df: pd.DataFrame, activity_type: str = 'IC50') -> pd.DataF
     to_drop = ['Molecule Max Phase', 'Molecular Weight', '#RO5 Violations', 'AlogP', 'Ligand Efficiency BEI',
                'Ligand Efficiency LE', 'Ligand Efficiency LLE', 'Ligand Efficiency SEI', 'Compound Key',
                'Source Description', 'Document Journal', 'Uo Units', 'Cell ChEMBL ID', 'Properties', 'Action Type',
-               'Standard Text Value', 'Value', 'Potential Duplicate', 'Comment', 'BAO Format ID',
-               'BAO Label', 'Target Organism']
+               'Standard Text Value', 'Value', 'Potential Duplicate', 'Comment', 'BAO Format ID', 'BAO Label',
+               'Target Organism']
 
-    df = df.drop(columns=[col for col in to_drop if col in df.columns])
+    df = df.drop([col for col in to_drop if col in df.columns])
 
-    # Renaming because THESE ARE LONG
     to_rename = {'Molecule ChEMBL ID': 'ID_Mol', 'Molecule Name': 'Name', 'Smiles': 'SMILES',
                  'Standard Relation': 'Relation', 'Standard Type': 'Type', 'Standard Value': 'Value',
                  'Standard Units': 'Units', 'Assay ChEMBL ID': 'ID_Assay', 'Target ChEMBL ID': 'ID_Target',
@@ -190,87 +203,101 @@ def preprocess_chembl(df: pd.DataFrame, activity_type: str = 'IC50') -> pd.DataF
                  'Assay Subcellular Fraction': 'Assay_Subcellular', 'Assay Parameters': 'Assay_Parameters',
                  'Assay Organism': 'Assay_Organism', 'Assay Cell Type': 'Assay_Cell_Type'}
 
-    def check_duplicates(value: float, other_values: List[float]): # based on pChEMBL_Value
-        if value in other_values:
-            return 'Duplicate'
-        if any([value + 3 in other_values, value - 3 in other_values, value + 6 in other_values, value - 6 in other_values]):
-            return 'Unit Error'
-        else:
-            return 'Cool&Good'
-
-    def mark_duplicates(df):
-        has_duplicate = []
-
-        for idx, row in df.iterrows():
-            value = row['pChEMBL_Value']
-            smiles = row['SMILES']
-
-            other_values = df[df['SMILES'] == smiles]['pChEMBL_Value'].drop(idx).values
-
-            has_duplicate.append(check_duplicates(value, other_values))
-
-        df['Issues'] = has_duplicate
-        return df
-
     num_entries = len(df)
 
-    df = df.rename(columns={key: value for key, value in to_rename.items() if key in df.columns})
-    df = df.replace(np.nan, pd.NA)
+    df = df.rename({key: value for key, value in to_rename.items() if key in df.columns})
+    df = df.with_columns([
+        pl.col(col_name).replace("", None).alias(col_name) for col_name in df.columns if df.schema[col_name] == pl.String
+    ])
 
-    to_type = {'ID_Mol': 'string', 'Name': 'string', 'SMILES': 'string', 'Type': 'string', 'Relation': 'string',
-               'Value': 'Float32', 'Units': 'string', 'pChEMBL_Value': 'Float32', 'ID_Assay': 'string',
-               'Assay_Desc': 'string', 'Assay_Type': 'string', 'ID_Target': 'string', 'Target': 'string',
-               'Validity': 'string', 'Type_Target': 'string', 'Document': 'string'}
+    to_type = {'ID_Mol': pl.String, 'Name': pl.String, 'SMILES': pl.String, 'Type': pl.String, 'Relation': pl.String,
+               'Value': pl.Float64, 'Units': pl.String, 'pChEMBL_Value': pl.Float64, 'ID_Assay': pl.String,
+               'Assay_Desc': pl.String, 'Assay_Type': pl.String, 'ID_Target': pl.String, 'Target': pl.String,
+               'Validity': pl.String, 'Type_Target': pl.String, 'Document': pl.String}
 
-    df = df.astype({key: value for key, value in to_type.items() if key in df.columns})
-    df['Relation'] = df['Relation'].apply(lambda string: string.strip("'"))
+    df = df.cast(to_type)
+    df = df.with_columns(
+        pl.col("Relation").str.strip_chars("'")
+    )
 
     print(f'Initial number of entries: {num_entries}')
 
     # Use only entries with full information available
-    df = df[(df.Type == activity_type) & (df.Relation == '=') & (df.Validity.isnull()) & (df.Units == 'nM') &
-            (df.Type_Target == 'SINGLE PROTEIN') & (df.pChEMBL_Value.notnull())].reset_index(drop=True)
+    df = df.filter(
+        (pl.col("Type") == activity_type) &
+        (pl.col("Relation") == "=") &
+        (pl.col("Validity").is_null()) &
+        (pl.col("Units") == "nM") &
+        (pl.col("Type_Target") == "SINGLE PROTEIN") &
+        (pl.col("pChEMBL_Value").is_not_null()) &
+        (pl.col("Assay_Organism") == "Homo sapiens")
+    )
 
     print(f'Checking completeness of data. Dropped {num_entries - len(df)} entries.')
     num_entries = len(df)
     if num_entries == 0:
         print('No entries remaining')
-        return pd.DataFrame()
+        return pl.DataFrame()
     print(f'Number of entries remaining: {num_entries}')
 
     # Assay shouldn't use a variant of a protein and should use Homo sapiens cell lines
-    matches = ['mutant', 'mutation', 'variant']
-    df['Assay_Desc'] = df['Assay_Desc'].str.lower().str.strip()
-    df = df[[all([match not in row['Assay_Desc'] for match in matches]) for idx, row in df.iterrows()]].reset_index(drop=True)
-    df = df[df['Assay_Organism'] == 'Homo sapiens']
+    patterns = ['mutant', 'mutation', 'variant']
+
+    df = (df
+        .with_columns(
+            pl.col("Assay_Desc").str.to_lowercase().str.strip_chars().alias("Assay_Desc")
+        )
+        .filter(
+            ~pl.col("Assay_Desc").str.contains_any(patterns)  # So nice they have this
+        )
+    )
 
     print(f'Checking for protein variants. Dropped {num_entries - len(df)} entries.')
     num_entries = len(df)
     if num_entries == 0:
         print('No entries remaining')
-        return pd.DataFrame()
+        return pl.DataFrame()
     print(f'Number of entries remaining: {num_entries}')
 
-    # convert to RDKit-native representation
-    df['SMILES'] = df['SMILES'].apply(lambda smiles: Chem.MolToSmiles(Chem.MolFromSmiles(smiles)))
+    df = df.with_columns(
+        pl.col("SMILES").map_elements(
+            lambda smiles: Chem.MolToSmiles(Chem.MolFromSmiles(smiles)),
+            return_dtype=pl.String,
+        )
+    )
 
-    # Measurements with equal values are duplicates, differing by 3/6 pX units suggests entry errors
-    df = mark_duplicates(df)
-    df = df[df['Issues'] != 'Unit Error'].reset_index(drop=True)  # remove the 3/6 differing ones
+    # Remove exact duplicates
+    er_df = df.filter(~df.select(["SMILES", "pChEMBL_Value"]).is_duplicated())
 
-    g_df = df[df['Issues'] == 'Cool&Good']
-    d_df = df[df['Issues'] == 'Duplicate']
+    # Remove measurements differing by 3/6/9 log10 units
+    er_df = (er_df
+        .group_by("SMILES")
+        .agg(
+            pl.col("pChEMBL_Value").map_batches(
+                lambda ser: check_unit_error(ser.to_list()),
+                return_dtype=pl.Boolean,
+                returns_scalar=True
+            ).alias("UnitError")
+        )
+        .filter(~pl.col("UnitError"))
+    )
 
-    pd_df = d_df.groupby('SMILES').apply(process_duplicates, pIC50_name='pChEMBL_Value').reset_index(drop=True)
-    df = pd.concat([g_df, pd_df], ignore_index=True)
+    df = df.join(er_df, how='inner', on='SMILES').drop("UnitError")
+
+    df = mad_duplicates(
+        df=df,
+        smiles_col="SMILES",
+        value_col="pChEMBL_Value",
+        range_threshold=range_threshold,
+        z_threshold=z_threshold
+    )
 
     print(f'Checking for duplicate entries. Dropped {num_entries - len(df)} entries.')
     num_entries = len(df)
     if num_entries == 0:
         print('No entries remaining')
-        return pd.DataFrame()
+        return pl.DataFrame()
     print(f'Number of entries remaining: {num_entries}')
-
-    df = df.drop(columns='Issues')
+    df = df.filter(pl.col("pChEMBL_Value").is_not_null())
 
     return df
