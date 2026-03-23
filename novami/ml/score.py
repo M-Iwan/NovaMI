@@ -7,10 +7,58 @@ from typing import Optional, Dict
 
 import numpy as np
 from sklearn.metrics import confusion_matrix, roc_auc_score, r2_score, mean_squared_error, mean_absolute_error
+from sklearn.metrics import average_precision_score
+
+
+def ece_score(y_true: np.ndarray, y_score: np.ndarray, sample_weight: np.ndarray = None, n_bins: int = 10):
+    """
+    Compute the Expected Calibration Error score.
+
+    Parameters
+    ----------
+    y_true : np.ndarray
+        Array with true binary values
+    y_score: np.ndarray
+        Predicted probabilities in range [0, 1]
+    sample_weight : np.ndarray
+        Array of sample weights. Must be the same shape as y_true
+    n_bins: int
+        Number of bins to use. Default is 10.
+
+    Returns
+    -------
+    ece: float
+        Expected Calibration Error score
+    """
+
+    bin_edges = np.linspace(0, 1, n_bins + 1)
+    bin_indices = np.clip(np.digitize(y_score, bin_edges) -1, 0, n_bins - 1)
+
+    prob_true = np.zeros(n_bins)
+    prob_pred = np.zeros(n_bins)
+    bin_weights = np.zeros(n_bins)
+
+    for bin_idx in range(n_bins):
+        mask = bin_indices == bin_idx
+
+        # these are sometimes empty
+        if np.sum(mask) == 0:
+            continue
+
+        weights = sample_weight[mask]
+        bin_weights[bin_idx] = weights.sum()
+
+        prob_true[bin_idx] = np.average(y_true[mask], weights=weights)
+        prob_pred[bin_idx] = np.average(y_score[mask], weights=weights)
+
+    total_weight = sample_weight.sum()
+    ece = np.sum((bin_weights / total_weight) * np.abs(prob_true - prob_pred))
+
+    return ece
 
 
 def score_classification_model(y_true: np.ndarray, y_pred: np.ndarray, y_score: np.ndarray,
-                               sample_weight: Optional[np.ndarray] = None) -> Dict[str, float]:
+                               y_wgts: Optional[np.ndarray] = None) -> Dict[str, float]:
     """
     Used with 1D numpy arrays.
 
@@ -23,17 +71,18 @@ def score_classification_model(y_true: np.ndarray, y_pred: np.ndarray, y_score: 
         Array of predicted labels.
     y_score: np.ndarray
         Array of predicted probabilities (from .predict_proba or .decision_function)
-    sample_weight: np.ndarray
+    y_wgts: np.ndarray
         Array of weights. Optional.
     """
 
     def safe_div(numerator, denominator, default_=0.0):
+
         return numerator / denominator if denominator != 0 else default_
 
-    if sample_weight is None:  # we don't know the weights
-        sample_weight = np.ones_like(y_true)  # just say they are equal and don't think about it anymore!
+    if y_wgts is None:  # we don't know the weights
+        y_wgts = np.ones_like(y_true)  # just say they are equal and don't think about it anymore!
 
-    conf_mat = confusion_matrix(y_true=y_true, y_pred=y_pred, sample_weight=sample_weight)
+    conf_mat = confusion_matrix(y_true=y_true, y_pred=y_pred, sample_weight=y_wgts)
 
     if len(np.unique(y_true)) != 2:
         return {}
@@ -56,11 +105,15 @@ def score_classification_model(y_true: np.ndarray, y_pred: np.ndarray, y_score: 
         'GeomRS': np.round(np.sqrt(rec * spec), 5),
         'HarmRS': np.round(safe_div(2 * rec * spec, rec + spec), 5),
         'F1 Score': np.round(safe_div(2 * tp, 2 * tp + fp + fn), 5),
-        'ROC AUC': np.round(roc_auc_score(y_true=y_true, y_score=y_score, sample_weight=sample_weight), 5),
-        'MCC': np.round(safe_div((tp * tn) - (fp * fn), np.sqrt((tp + fp) * (tp + fn) * (tn + fp) * (tn + fn))), 5)
+        'ROC AUC': np.round(roc_auc_score(y_true=y_true, y_score=y_score, sample_weight=y_wgts), 5),
+        'MCC': np.round(safe_div((tp * tn) - (fp * fn), np.sqrt((tp + fp) * (tp + fn) * (tn + fp) * (tn + fn))), 5),
+        'PRC AUC': np.round(average_precision_score(y_true=y_true, y_score=y_score, sample_weight=y_wgts), 5),
+        'Brier': np.round((np.sum((y_score - y_true)**2))/len(y_true), 5),
+        'ECE': np.round(ece_score(y_true=y_true, y_score=y_score, sample_weight=y_wgts), 5)
     }
 
     return metrics
+
 
 def score_regression_model(y_true: np.ndarray, y_pred: np.ndarray, sample_weight: np.ndarray = None):
 
