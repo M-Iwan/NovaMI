@@ -2,10 +2,11 @@ import argparse
 import datetime
 import os, joblib
 
-from novami.data.dataset import DatasetManager
-from novami.data.transform import DataTransformer
-from novami.ml.params import *
+import polars as pl
+from novami.io import read_pl, write_pl
+from novami.data.manager import KFoldManager
 from novami.ml.optimize import optimize_unit_optuna
+from novami.ml.params import *
 
 parser = argparse.ArgumentParser(prog="OptunaOptimization")
 
@@ -41,6 +42,7 @@ def main(args):
     model_name = args.model_name
     features_col = args.features_col
     test_fold = args.test_fold
+    task = args.task
 
     if not os.path.exists(data_path):
         raise OSError(f"Data file at < {data_path} > does not exist")
@@ -52,8 +54,8 @@ def main(args):
 
     study_path = os.path.join(save_dir, f'study_{test_fold}.joblib')
     ensemble_path = os.path.join(save_dir, f'ensemble_{test_fold}.joblib')
-    pred_path = os.path.join(save_dir, f'preds_{test_fold}.joblib')
-    scores_path = os.path.join(save_dir, f'scores_{test_fold}.joblib')
+    pred_path = os.path.join(save_dir, f'preds_{test_fold}.tsv')
+    scores_path = os.path.join(save_dir, f'scores_{test_fold}.tsv')
 
     log('> Paths OK')
     log('Checking data')
@@ -67,19 +69,19 @@ def main(args):
     required_cols = [smiles_col, features_col, target_col]
 
     # If weights or groups are not used, an empty string should be passed
-    if weights_col is '':
+    if weights_col == '':
         weights_col = None
     else:
         required_cols.append(weights_col)
-    if groups_col is '':
+    if groups_col == '':
         groups_col = None
     else:
         required_cols.append(groups_col)
 
-    data = joblib.load(data_path)
-    desc = joblib.load(desc_path)
+    data = read_pl(data_path)
+    desc = read_pl(desc_path)
 
-    df = data.join(desc[[smiles_col, desc_col]], on=smiles_col, how='inner')
+    df = data.join(desc[[smiles_col, features_col]], on=smiles_col, how='inner')
 
     for col in required_cols:
         if col not in df.columns:
@@ -100,9 +102,14 @@ def main(args):
         raise ValueError(f"Model < {model_name} > not supported. Please add a corresponding "
                          f"parameter function to novami.ml.params")
 
-    if optim_metric not in ["TP", "FP", "FN", "TN", "Accuracy", "Recall", "Specificity", "Precision",
-                          "Balanced Accuracy", "GeomRS", "HarmRS", "F1 Score", "ROC AUC", "MCC"]:
-        raise ValueError(f"Metric < {optim_metric} > not supported")
+    if task == 'classification':
+        if optim_metric not in ["TP", "FP", "FN", "TN", "Accuracy", "Recall", "Specificity", "Precision",
+                                "Balanced Accuracy", "GeomRS", "HarmRS", "F1 Score", "ROC AUC", "MCC",
+                                'PRC AUC', 'ECE', 'Brier']:
+            raise ValueError(f"Metric < {optim_metric} > not supported")
+    elif task == 'regression':
+        if optim_metric not in ['R2', 'RMSE', 'MAE']:
+            raise ValueError(f"Metric < {optim_metric} > not supported")
 
     if not isinstance(n_trials, int) or n_trials < 1:
         raise TypeError("Number of trials must be a positive integer")
@@ -113,22 +120,23 @@ def main(args):
     log('> Parameters OK')
     log('Preparing DatasetManager')
 
-    dataset_manager = DatasetManager(
+    manager = KFoldManager(
         df=df,
+        smiles_col=smiles_col,
         features_col=features_col,
         target_col=target_col,
         fold_col=fold_col,
         test_fold=test_fold,
         weights_col=weights_col,
-        groups_col=groups_col
+        groups_col=groups_col,
     )
 
-    log('> DatasetManager OK')
+    log('> KFoldManager OK')
     log('Performing Optuna optimization')
 
     study, ensemble = optimize_unit_optuna(
         model_name=model_name,
-        dataset_manager=dataset_manager,
+        dataset_manager=manager,
         optimization_metric=optim_metric,
         task=task,
         n_trials=n_trials,
@@ -145,7 +153,7 @@ def main(args):
 
     log('Evaluating ensemble')
 
-    test_data, test_smiles = dataset_manager.get_test_data(), dataset_manager.get_test_smiles()
+    test_data, test_smiles = manager.get_test_data(), manager.get_test_smiles()
     y_true = test_data['y_true']
     y_pred = ensemble.predict(test_data['x_array'])
 
@@ -155,9 +163,9 @@ def main(args):
     log('> Evaluation OK')
     log('Saving results')
 
-    joblib.dump(pred, pred_path)
+    write_pl(pred, pred_path)
     log(f'> Predictions saved at {pred_path}')
-    joblib.dump(scores, scores_path)
+    write_pl(scores, scores_path)
     log(f'> Scores saved at {scores_path}')
 
     log('Job finished successfully')
