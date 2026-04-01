@@ -5,12 +5,10 @@ from copy import deepcopy
 import numpy as np
 import pandas as pd
 import polars as pl
-import optuna
 
-from novami.ml.evaluate import kf_evaluate, bootstrap_evaluate, test_evaluate
+from novami.ml.evaluate import kf_evaluate, tt_evaluate
 from novami.ml.models import Unit, Ensemble, ClassifierUnit, RegressorUnit, ClassifierEnsemble, RegressorEnsemble
 from novami.ml.score import average_scores, score_regression_model, score_classification_model
-from novami.ml.params import *
 from novami.ml.utils import *
 from novami.data.manager import KFoldManager
 
@@ -59,7 +57,7 @@ def random_hyperparameter_search(model_class, df: pd.DataFrame, features_col: st
                 dataset_values = df['Dataset'].unique()
                 assert all(['train' in dataset_values, 'test' in dataset_values, len(dataset_values) == 2])
 
-                scores, _ = test_evaluate(model, df, features_col, target_col, task, library, split_column='Dataset')
+                scores, _ = tt_evaluate(model, df, features_col, target_col, task, library, split_column='Dataset')
             else:
                 raise ValueError(f'Expected < evaluation > to be either kf, bs, or ts, got < {evaluation} > instead)')
             av_scores = average_scores(scores)
@@ -263,7 +261,7 @@ def optimize_unit_optuna(model_name: str, dataset_manager: KFoldManager, optimiz
 
     # Select optimization direction
     if optimization_metric in ['Recall', 'Accuracy', 'ROC AUC', 'Precision', 'F1 Score',
-                               'MCC', 'R2', 'Balanced Accuracy', 'Specificity']:
+                               'MCC', 'R2', 'Balanced Accuracy', 'Specificity', 'PRC AUC']:
         direction = 'maximize'
     else:
         direction = 'minimize'
