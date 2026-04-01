@@ -9,7 +9,7 @@ def get_params_function(model_name: str):
         'LGBMRegressor': get_params_lgbm_regressor,
         'CatBoostRegressor': get_params_catboost_regressor,
         'RandomForestClassifier': get_params_random_forest_classifier,
-        'RandomForestRegressor': get_params_random_forest_classifier,
+        'RandomForestRegressor': get_params_random_forest_regressor,
         'SVC': get_params_svc,
         'SVR': get_params_svr,
         'SGDRegressor': get_params_sgd_regressor,
