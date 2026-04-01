@@ -36,6 +36,7 @@ class DataTransformer:
     -----
     TODO: Change the behaviour of missing/imputer to only remove features above some missingness threshold
     TODO: Integrate with deep module
+    TODO: Update code in other modules for clipping (ah, breaking signatures again)
     """
 
     def __init__(self, use_masks: bool = True, use_corr: bool = False, use_imputer: bool = True,
@@ -43,23 +44,24 @@ class DataTransformer:
         """
         Initialize the DataTransformer object.
         """
-
         self.imputer = None
         self.selector = None
         self.scaler = None
         self.masks = {}
         self.n_features = {}
+        self.clips = None  # numpy array with clipping ranges
         self.use_masks = use_masks
         self.use_corr = use_corr  # goes with masks, no separate attribute
         self.use_imputer = use_imputer
         self.use_selector = use_selector
         self.use_scaler = use_scaler
+        #self.use_clipper = use_clipper  # To be implemented
         self.masks_fit = False
         self.corr_fit = False
         self.imputer_fit = False
         self.selector_fit = False
         self.scaler_fit = False
-
+        self.clipper_fit = False
 
     def __repr__(self):
         return (f"<{self.__class__.__name__}>: use_masks: {self.use_masks}, use_corr: {self.use_corr}, "
@@ -371,6 +373,39 @@ class DataTransformer:
         x_array = self.scaler.transform(x_array)
         return x_array
 
+    def fit_clipper(self, x_array: np.ndarray):
+        """
+        Compute 6 timex Standard Deviation of features to be used as clipping thresholds.
+
+        Parameters
+        ----------
+        x_array: np.ndarray
+            Input feature array to clip.
+        """
+
+        x_array = self.validate_features(x_array)
+        self.clips = 6 * np.std(x_array, axis=0)
+        self.clipper_fit = True
+
+    def apply_clipper(self, x_array: np.ndarray):
+        """
+        Clip the normalized features to 6 times their Standard Deviation.
+
+        Parameters
+        ----------
+        x_array: np.ndarray
+            Input feature array to clip.
+
+        Returns
+        -------
+        np.ndarray
+            Clipped feature array.
+        """
+        x_array = self.validate_features(x_array)
+        x_array = np.clip(x_array, -self.clips, self.clips)
+
+        return x_array
+
     def transform(self, x_array: np.ndarray):
         """
         Transform data by applying all enabled preprocessing steps.
@@ -398,7 +433,10 @@ class DataTransformer:
             x_array = self.apply_selector(x_array)
         if self.use_scaler:
             x_array = self.apply_scaler(x_array)
-
+        """
+        if self.use_clipper:
+            x_array = self.apply_clipper(x_array)
+        """
         return x_array
 
     def fit_transform(self, x_array: np.ndarray):
@@ -442,6 +480,13 @@ class DataTransformer:
             if not self.scaler_fit:
                 self.fit_scaler(x_array)
             x_array = self.apply_scaler(x_array)
+
+        """
+        if self.use_clipper:
+            if not self.clipper_fit:
+                self.fit_clipper(x_array)
+            x_array = self.apply_clipper(x_array)
+        """
 
         return x_array
 

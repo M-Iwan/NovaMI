@@ -1,4 +1,20 @@
-# [0.3.4]: 25-02-2-26
+# [0.3.5]: 01-04-2026
+
+[Added]
+- Extend functionality of group_k_neighbors_distance
+- Add W.I.P. Winsorization to DataTransformer
+- (Partially) clean the deep module
+- Calculations for Precision-Recall Curve AUC, Expected Calibration Error, Brier Score
+- New QCG template for KFold-like calculations
+
+[Fixed]
+- The MAD deduplication procedure is now used
+
+[Removed]
+- A lot of old code from the deep module
+
+
+# [0.3.4]: 25-02-2026
 
 [Added]
 - Added support for calculating distance distribution to self in data.distance.k_neighbors_distance

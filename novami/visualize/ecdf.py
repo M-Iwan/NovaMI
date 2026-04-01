@@ -2,7 +2,6 @@ from typing import Union, List, Optional
 
 import polars as pl
 import seaborn as sns
-import matplotlib.pyplot as plt
 
 from novami.visualize.utils import *
 from novami.data.distance import k_neighbors_distance
@@ -56,12 +55,12 @@ def k_neighbours_ecdf(train_df: pl.DataFrame, test_df: pl.DataFrame, embedding_c
     if embedding_col not in train_df.columns or embedding_col not in test_df.columns:
         raise KeyError(f'{embedding_col} not found in DataFrame.')
 
-    array_1 = train_df[embedding_col].to_numpy()
-    array_2 = test_df[embedding_col].to_numpy()
+    query_array = np.vstack(test_df[embedding_col].to_numpy())
+    ref_array = np.vstack(train_df[embedding_col].to_numpy())
 
     neighbor_df = k_neighbors_distance(
-        array_1=array_1,
-        array_2=array_2,
+        query_array=query_array,
+        ref_array=ref_array,
         metric=metric,
         n_jobs=n_jobs,
         nearest_k=nearest_k,
