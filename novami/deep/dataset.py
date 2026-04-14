@@ -1,3 +1,6 @@
+"""
+Multi-modal Polars-backed :class:`torch.utils.data.Dataset` and batch container.
+"""
 import torch
 from torch.utils.data import Dataset
 import polars as pl
@@ -6,8 +9,8 @@ from typing import Dict, Any, List, Optional, Union
 
 class MMDataset(Dataset):
     """
-    Multi-Modal Dataset that handles strings, graphs, descriptors, images, etc.
-    
+    Multi-modal dataset for strings, graphs, descriptors, images, targets, and weights.
+
     Parameters
     ----------
     df: pl.DataFrame
@@ -29,14 +32,33 @@ class MMDataset(Dataset):
 
     def __init__(self, df: pl.DataFrame, config: Dict[str, str]):
         self.df = df
-        self.config = {}
+        self.config: Dict[str, str] = {}
+        self.feature_columns: List[str] = []
+        self.target_column: Optional[str] = None
+        self.weight_column: Optional[str] = None
+        self.group_column: Optional[str] = None
 
-        self._validate_config()
+        missing_cols = set(config.keys()) - set(df.columns)
+        if missing_cols:
+            raise ValueError(f"Columns not found in DataFrame: {missing_cols}")
 
-        self.feature_columns = []
-        self.target_column = None
-        self.weight_column = None
-        self.group_column = None
+        unsupported = set(config.values()) - self.SUPPORTED_MODALITIES
+        if unsupported:
+            raise ValueError(f"Unsupported modalities: {unsupported}")
+
+        modality_counts: Dict[str, int] = {}
+        for modality in config.values():
+            modality_counts[modality] = modality_counts.get(modality, 0) + 1
+
+        multi_allowed = {'descriptor', 'string', 'graph', 'image'}
+        for modality, count in modality_counts.items():
+            if count > 1 and modality not in multi_allowed:
+                raise ValueError(f"Modality '{modality}' can only be assigned to one column")
+
+        if modality_counts.get('target', 0) != 1:
+            raise ValueError("Exactly one column must have modality 'target'")
+        if not any(m in {'string', 'graph', 'descriptor', 'image'} for m in config.values()):
+            raise ValueError("At least one feature modality is required")
 
         for col_name, modality in config.items():
             if modality in {'string', 'graph', 'descriptor', 'image'}:
@@ -54,53 +76,40 @@ class MMDataset(Dataset):
                 self.group_column = col_name
                 self.config['group'] = modality
 
-        # Validate minimum requirements
-        if not self.feature_columns:
-            raise ValueError("At least one feature modality is required")
-        if not self.target_column:
-            raise ValueError("At least one target is required")
-
-        # Validate all columns exist in DataFrame
-        missing_cols = set(config.keys()) - set(df.columns)
-        if missing_cols:
-            raise ValueError(f"Columns not found in DataFrame: {missing_cols}")
+        self._validate_config()
 
     def _validate_config(self):
-        """Validate the configuration dictionary"""
-        
+        """Validate internal ``self.config`` after construction."""
+
         unsupported = set(self.config.values()) - self.SUPPORTED_MODALITIES
         if unsupported:
             raise ValueError(f"Unsupported modalities: {unsupported}")
-
-        modality_counts = {}
-        for modality in self.config.values():
-            modality_counts[modality] = modality_counts.get(modality, 0) + 1
-
-        # Multiple instances allowed for these modalities
-        multi_allowed = {'descriptor', 'string', 'graph', 'image'}
-        for modality, count in modality_counts.items():
-            if count > 1 and modality not in multi_allowed:
-                raise ValueError(f"Modality '{modality}' can only be assigned to one column")
 
     def __len__(self) -> int:
         return len(self.df)
 
     def __getitem__(self, idx: int) -> Dict[str, Any]:
         """
-        Get a single sample from the dataset.
+        Return one sample as a dict keyed like ``self.config`` / standard batch keys.
+
+        Returns
+        -------
+        dict
+            Feature keys match ``self.config``; ``'y_true'`` / ``'y_wgts'`` / ``'group'``
+            when present.
         """
         row = self.df.row(idx, named=True)
-        sample = {}
+        sample: Dict[str, Any] = {}
 
         for col_name, modality in self.config.items():
             data = row[col_name]
 
             if modality == 'string':
                 sample[col_name] = data
-            if modality == 'target':
-                sample['y_true'] = data
             elif modality in {'graph', 'descriptor', 'image'}:
                 sample[col_name] = data
+            elif modality == 'target':
+                sample['y_true'] = data
             elif modality == 'sample_weight':
                 sample['y_wgts'] = data
             elif modality == 'group':
@@ -109,86 +118,104 @@ class MMDataset(Dataset):
         return sample
 
     def get_feature_columns(self) -> List[str]:
-        """Get list of feature column names"""
+        """Return a copy of feature column names."""
         return self.feature_columns.copy()
 
-    def get_target_column(self) -> str:
-        """Get target column name"""
+    def get_target_column(self) -> Optional[str]:
+        """Original target column name before rename to ``y_true``."""
         return self.target_column
 
     def get_modality_info(self) -> Dict[str, List[str]]:
-        """Get columns organized by modality type"""
-        modality_info = {}
+        """Map modality strings to lists of column / batch keys."""
+        modality_info: Dict[str, List[str]] = {}
         for col_name, modality in self.config.items():
-            if modality not in modality_info:
-                modality_info[modality] = []
-            modality_info[modality].append(col_name)
+            modality_info.setdefault(modality, []).append(col_name)
         return modality_info
 
     def has_sample_weights(self) -> bool:
-        """Check if dataset has sample weights"""
+        """True if a sample-weight column was provided."""
         return self.weight_column is not None
 
     def has_groups(self) -> bool:
-        """Check if dataset has group information"""
+        """True if a group column was provided."""
         return self.group_column is not None
 
 
 class MMBatch:
     """
-    Multi-modal batch container with dictionary-like access and automatic device transfer.
+    Dict-like batch produced by :class:`novami.deep.loader.MMLoader` collate.
+
+    Parameters
+    ----------
+    data : dict
+        Batched tensors and other values.
+    config : dict
+        Same modality mapping as the source :class:`MMDataset` (keys may include
+        ``'y_true'``, ``'y_wgts'``).
     """
-    
+
     def __init__(self, data: Dict[str, Any], config: Dict[str, str]):
         self.data = data
         self.config = config
-    
+
     def __getitem__(self, key: str):
         return self.data[key]
-    
+
     def __contains__(self, key: str):
         return key in self.data
-    
+
     def get(self, key: str, default=None):
         return self.data.get(key, default)
-    
+
     def keys(self):
         return self.data.keys()
-    
+
     def values(self):
         return self.data.values()
-    
+
     def items(self):
         return self.data.items()
-    
+
     def get_modality(self, key: str) -> Optional[str]:
-        """Get the modality type for a given key"""
+        """Modality string for ``key``, if known."""
         return self.config.get(key)
-    
+
     def get_by_modality(self, modality: str) -> Dict[str, Any]:
-        """Get all data of a specific modality type"""
-        return {key: self.data[key] for key, mod in self.config.items() 
+        """All batch entries whose modality equals ``modality``."""
+        return {key: self.data[key] for key, mod in self.config.items()
                 if mod == modality and key in self.data}
-    
+
     def to(self, device: Union[str, torch.device], non_blocking: bool = False):
         """
-        Move all tensors in the batch to the specified device
+        Move tensors (and ``torch_geometric`` objects) to ``device``.
+
+        Parameters
+        ----------
+        device : str or torch.device
+            Target device.
+        non_blocking : bool, optional
+            Passed to ``tensor.to(...)`` where applicable.
+
+        Returns
+        -------
+        MMBatch
+            New batch sharing the same ``config``.
         """
         new_data = {}
         for key, value in self.data.items():
             if isinstance(value, torch.Tensor):
                 new_data[key] = value.to(device, non_blocking=non_blocking)
-            elif isinstance(value, tuple) and len(value) == 3:
+            elif isinstance(value, tuple) and len(value) in (2, 3):
                 new_data[key] = tuple(
-                    item.to(device, non_blocking=non_blocking) 
-                    if isinstance(item, torch.Tensor) else item 
+                    item.to(device, non_blocking=non_blocking)
+                    if isinstance(item, torch.Tensor) else item
                     for item in value
                 )
-            elif hasattr(value, 'to'):  # torch_geometric.Data objects
+            elif hasattr(value, 'to'):
                 new_data[key] = value.to(device)
             else:
                 new_data[key] = value
         return MMBatch(new_data, self.config)
-    
+
     def __repr__(self):
         return f"MMBatch({list(self.data.keys())})"

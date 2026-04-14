@@ -1,3 +1,12 @@
+"""
+Multi-modal multi-task GNN (MMMTGNN) and related backbone blocks.
+
+Formerly ``novami.deep.model``. Uses :mod:`deprecated.deep.dataset` and
+:mod:`deprecated.deep.mmgv`. For new code prefer :class:`novami.deep.models.MMTUnit`,
+:class:`novami.deep.dataset.MMDataset`, and :class:`novami.deep.loader.MMLoader`.
+
+Import example: ``from deprecated.deep.mmmtgnn import MMMTGNN``.
+"""
 import inspect
 from copy import deepcopy
 from functools import reduce
@@ -20,8 +29,8 @@ import torch_geometric
 from torch_geometric.utils import to_dense_batch
 from torch_geometric.nn import global_mean_pool, global_max_pool
 
-from novami.deep.dataset import StringDataset, GraphDataset
-from novami.deep.vectorizer import MMGV
+from deprecated.deep.dataset import StringDataset, GraphDataset
+from deprecated.deep.mmgv import MMGV
 from novami.deep.modules import build_linear_layers, build_graph_layers, build_conv_layers, build_recurrent_layers
 
 

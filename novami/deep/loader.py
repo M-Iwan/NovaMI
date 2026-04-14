@@ -1,3 +1,7 @@
+"""
+PyTorch :class:`DataLoader` wrapper that collates :class:`novami.deep.dataset.MMDataset`
+samples into :class:`novami.deep.dataset.MMBatch` (including optional default ``y_wgts``).
+"""
 import warnings
 from typing import Dict, Any, List
 
@@ -96,6 +100,10 @@ class MMLoader:
 
             elif modality == 'group':
                 collated_data['group'] = values
+
+        if 'y_true' in collated_data and 'y_wgts' not in collated_data:
+            yt = collated_data['y_true']
+            collated_data['y_wgts'] = torch.ones_like(yt, dtype=torch.float32)
 
         return MMBatch(collated_data, self.config)
 

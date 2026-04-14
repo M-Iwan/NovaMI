@@ -1,12 +1,8 @@
 """
-Deep learning units and training base classes.
+Legacy standalone GNN regressor with duplicated training utilities.
 
-The supported entry points are :class:`MMTUnit` (training/eval API), concrete
-models such as :class:`TestModel`, and the data pipeline
-:class:`novami.deep.dataset.MMDataset` / :class:`novami.deep.loader.MMLoader`.
-
-Legacy :class:`GNNRegressor` is re-exported via ``__getattr__`` with a
-deprecation warning; implementation lives in ``deprecated.deep.gnn_regressor``.
+Use :class:`novami.deep.models.TestModel` (subclass of :class:`novami.deep.models.MMTUnit`)
+for new training code with the same architecture pattern.
 """
 
 import os
@@ -14,43 +10,49 @@ import inspect
 from copy import deepcopy
 from functools import reduce
 from collections import defaultdict
-from typing import List, Iterable, Union
-from abc import ABC, abstractmethod
 
 import numpy as np
 from sklearn.metrics import r2_score, root_mean_squared_error, mean_absolute_error
 
 import torch
-from torch import nn, Tensor
+from torch import nn
 
-from novami.deep.modules import build_linear_layers, build_graph_layers, build_conv_layers, build_recurrent_layers
+from novami.deep.modules import build_linear_layers, build_graph_layers
 from torch_geometric.nn import global_mean_pool
 
 
-class MMTUnit(ABC, nn.Module):
+class GNNRegressor(nn.Module):
     """
-    Abstract base for multi-task PyTorch models with masked weighted loss.
-
-    Subclasses implement :meth:`forward` and static :meth:`score`. Training
-    helpers (:meth:`fit_epoch`, :meth:`fit`, etc.) assume batches provide
-    ``y_true`` and ``y_wgts`` tensors (see :class:`novami.deep.loader.MMLoader`).
+    Basic graph neural network regressor (legacy, not an :class:`MMTUnit`).
 
     Parameters
     ----------
     device : str, optional
-        Default device for training loops that move tensors. Default ``'cpu'``.
+        Device string. Default is ``'cuda'``.
     num_task : int, optional
-        Number of tasks (output dimension for regression heads). Default is 1.
+        Number of regression tasks. Default is 1.
+    gnn_params : dict, optional
+        Parameters for :func:`novami.deep.modules.build_graph_layers`.
+    lin_params : dict, optional
+        Parameters for :func:`novami.deep.modules.build_linear_layers`.
+    max_norm : float, optional
+        Gradient clipping max norm. Default is 1.0.
     model_name : str, optional
-        Logical name; stored as :attr:`name` and :attr:`model_name` for logging
-        and checkpoint filenames.
+        Used in default checkpoint filenames. Default is ``'GNN'``.
     """
-    def __init__(self, device: str = 'cpu', num_task: int = 1, model_name: str = 'Unit'):
-        super(MMTUnit, self).__init__()
+
+    def __init__(self, device: str = 'cuda', num_task: int = 1, gnn_params: dict = None,
+                 lin_params: dict = None, max_norm: float = 1.0, model_name: str = "GNN"):
+        super(GNNRegressor, self).__init__()
+
+        self.set_seed(42)
+        self.hparams = self.get_hyperparameters()
         self.device = device
         self.num_task = num_task
-        self.name = model_name
-        self.model_name = model_name  # alias for checkpoints / save paths
+        self.gnn_params = deepcopy(gnn_params)
+        self.lin_params = deepcopy(lin_params)
+        self.max_norm = max_norm
+        self.model_name = model_name
 
         self.loss_fn = None
         self.optimizer = None
@@ -60,14 +62,25 @@ class MMTUnit(ABC, nn.Module):
         self.best_state_dict = None
         self.best_epoch = None
 
-    @abstractmethod
-    def forward(self, batch: dict):
-        """Compute predictions for one batch (dict or :class:`novami.deep.dataset.MMBatch`)."""
+        self.gnn_input_name = self.gnn_params.get('input_name', "Graph")
+        self.gnn_layer, self.gnn_out_size = build_graph_layers(self.gnn_params)
+        self.lin_params['sizes'] = [self.gnn_out_size] + self.lin_params.get('sizes') + [self.num_task]
+        self.lin_layers, _ = build_linear_layers(**self.lin_params)
 
-    @staticmethod
-    @abstractmethod
-    def score(y_true: np.ndarray, y_pred: np.ndarray, y_wgts: np.ndarray):
-        """Return a dict of scalar metrics for aggregated predictions."""
+    def forward(self, batch_input: dict):
+        """
+        Forward pass through GNN and linear layers.
+        """
+        graph_batch = batch_input[self.gnn_input_name]
+
+        for layer in self.gnn_layer:
+            x = layer(graph_batch)
+            graph_batch.x = x
+
+        x_out = global_mean_pool(graph_batch.x, graph_batch.batch)
+        x_out = self.lin_layers(x_out)
+
+        return x_out
 
     def grad_norm(self):
         """Calculate gradient norm."""
@@ -267,19 +280,7 @@ class MMTUnit(ABC, nn.Module):
 
     def mw_loss(self, y_pred, y_true, y_wgts):
         """
-        Per-element loss weighted by ``y_wgts`` with NaN masking on ``y_true``.
-
-        Parameters
-        ----------
-        y_pred : torch.Tensor
-        y_true : torch.Tensor
-        y_wgts : torch.Tensor
-
-        Returns
-        -------
-        dict
-            ``'Total'`` and ``'Task'`` entries, each ``(value, weight)`` tensors
-            for aggregation with :meth:`combine_mw_loss`.
+        Masked weighted loss.
         """
 
         mask = ~torch.isnan(y_true)
@@ -330,24 +331,21 @@ class MMTUnit(ABC, nn.Module):
 
     def mw_metrics(self, y_true, y_pred, y_wgts):
         """
-        Aggregate predictions based on different criteria. Intended to be used
-        with classical ML metrics, purely on predictions
+        Aggregate predictions for metric computation.
         """
         y_true = y_true.detach().cpu().numpy()
         y_pred = y_pred.detach().cpu().numpy()
         y_wgts = y_wgts.detach().cpu().numpy()
 
-        # Calculate Overall metrics
-        total_metrics = self.score(y_true=y_true.flatten(),
-                                   y_pred=y_pred.flatten(),
-                                   y_wgts=y_wgts.flatten())
+        total_metrics = self.score_regression(y_true=y_true.flatten(),
+                                              y_pred=y_pred.flatten(),
+                                              y_wgts=y_wgts.flatten())
 
-        # Calculate per-task metrics
         per_task_metrics = defaultdict(dict)
         for t_idx in range(self.num_task):
-            per_task_metrics[f"Task_{t_idx}"] = self.score(y_true=y_true[:, t_idx].flatten(),
-                                                           y_pred=y_pred[:, t_idx].flatten(),
-                                                           y_wgts=y_wgts[:, t_idx].flatten())
+            per_task_metrics[f"Task_{t_idx}"] = self.score_regression(y_true=y_true[:, t_idx].flatten(),
+                                                                      y_pred=y_pred[:, t_idx].flatten(),
+                                                                      y_wgts=y_wgts[:, t_idx].flatten())
         return {
             'Total': total_metrics,
             'Task': per_task_metrics,
@@ -361,6 +359,22 @@ class MMTUnit(ABC, nn.Module):
             'y_wgts': torch.cat(epoch_data['y_wgts'], dim=0),
         }
         return packed_data
+
+    @staticmethod
+    def score_regression(y_true: np.ndarray, y_pred: np.ndarray, y_wgts: np.ndarray):
+
+        mask = ~np.isnan(y_true)
+        y_true = y_true[mask]
+        y_pred = y_pred[mask]
+        y_wgts = y_wgts[mask]
+
+        metrics = {
+            'R2': np.round(r2_score(y_true=y_true, y_pred=y_pred, sample_weight=y_wgts), 5),
+            'MAE': np.round(mean_absolute_error(y_true=y_true, y_pred=y_pred, sample_weight=y_wgts), 5),
+            'RMSE': np.round(root_mean_squared_error(y_true=y_true, y_pred=y_pred, sample_weight=y_wgts), 5)
+        }
+
+        return metrics
 
     def set_loss_function(self, loss_fn=torch.nn.BCEWithLogitsLoss, loss_params: dict = None):
         if callable(loss_fn):
@@ -431,109 +445,3 @@ class MMTUnit(ABC, nn.Module):
     def set_seed(seed: int = 42):
         np.random.seed(seed)
         torch.manual_seed(seed)
-
-
-class TestModel(MMTUnit):
-    """
-    Minimal GNN + MLP regression head (template for :class:`MMTUnit` subclasses).
-
-    Parameters
-    ----------
-    device : str, optional
-        Device hint for training code. Default ``'cpu'``.
-    num_task : int, optional
-        Number of regression outputs. Default is 1.
-    model_name : str, optional
-        Passed to :class:`MMTUnit`. Default ``'Unit'``.
-    gnn_params : dict, optional
-        Arguments for :func:`novami.deep.modules.build_graph_layers`. Must
-        include ``layer``, ``layer_type`` (``'convolutional'`` | ``'attention'`` |
-        ``'edge'``), ``sizes``, ``input_dim``, and optional ``input_name`` (graph
-        batch key; default ``'Graph'``).
-    lin_params : dict, optional
-        Keyword arguments for :func:`novami.deep.modules.build_linear_layers`
-        (without ``sizes`` first segment; output width is filled from GNN).
-    max_norm : float, optional
-        Max norm for gradient clipping. Default is 1.0.
-    """
-    def __init__(self, device: str = 'cpu', num_task: int = 1, model_name: str = 'Unit',
-                 gnn_params: dict=None, lin_params: dict=None, max_norm: float = 1.0):
-        super(TestModel, self).__init__(device=device, num_task=num_task, model_name=model_name)
-
-        self.gnn_params = deepcopy(gnn_params)
-        self.lin_params = deepcopy(lin_params)
-        self.max_norm = max_norm
-
-        self.gnn_input_name = self.gnn_params.get('input_name', "Graph")
-        self.gnn_layer, self.gnn_out_size = build_graph_layers(self.gnn_params)
-        self.lin_params['sizes'] = [self.gnn_out_size] + self.lin_params.get('sizes') + [self.num_task]
-        self.lin_layers, _ = build_linear_layers(**self.lin_params)
-
-    def forward(self, batch_input: dict):
-        """
-        Pool node embeddings and apply the linear head.
-
-        Parameters
-        ----------
-        batch_input : dict
-            Must contain the graph batch under ``gnn_params['input_name']``
-            (default key ``'Graph'``).
-
-        Returns
-        -------
-        torch.Tensor
-            Predictions of shape ``(batch, num_task)``.
-        """
-        graph_batch = batch_input[self.gnn_input_name]
-
-        for layer in self.gnn_layer:
-            x = layer(graph_batch)
-            graph_batch.x = x
-
-        x_out = global_mean_pool(graph_batch.x, graph_batch.batch)
-        x_out = self.lin_layers(x_out)
-
-        return x_out
-
-    @staticmethod
-    def score(y_true: np.ndarray, y_pred: np.ndarray, y_wgts: np.ndarray):
-        """
-        Regression metrics (R2, MAE, RMSE) with NaNs removed and ``y_wgts`` applied.
-
-        Parameters
-        ----------
-        y_true, y_pred, y_wgts : np.ndarray
-            Flat or aligned arrays after masking.
-
-        Returns
-        -------
-        dict
-            Metric name to rounded float.
-        """
-        mask = ~np.isnan(y_true)
-        y_true = y_true[mask]
-        y_pred = y_pred[mask]
-        y_wgts = y_wgts[mask]
-
-        metrics = {
-            'R2': np.round(r2_score(y_true=y_true, y_pred=y_pred, sample_weight=y_wgts), 5),
-            'MAE': np.round(mean_absolute_error(y_true=y_true, y_pred=y_pred, sample_weight=y_wgts), 5),
-            'RMSE': np.round(root_mean_squared_error(y_true=y_true, y_pred=y_pred, sample_weight=y_wgts), 5)
-        }
-
-        return metrics
-
-
-def __getattr__(name):
-    """Lazy re-export of legacy symbols with a deprecation warning."""
-    import warnings
-    if name == "GNNRegressor":
-        warnings.warn(
-            "GNNRegressor has moved to deprecated.deep.gnn_regressor; prefer "
-            "TestModel (MMTUnit) for new code.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        from deprecated.deep.gnn_regressor import GNNRegressor as _GNNRegressor
-        return _GNNRegressor
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

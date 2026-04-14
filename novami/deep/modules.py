@@ -1,3 +1,6 @@
+"""
+Reusable GNN / CNN / RNN blocks and layer factories for ``novami.deep`` models.
+"""
 import inspect
 from typing import List
 
@@ -10,7 +13,15 @@ from novami.deep.utils import get_activation_fn
 
 class GNNModule(nn.Module):
     """
+    One message-passing block: conv → optional norm → activation → dropout.
 
+    Parameters
+    ----------
+    graph_layer : torch.nn.Module
+        Typically a PyG conv layer.
+    batch_norm : torch.nn.Module or None
+    activation : torch.nn.Module or None
+    dropout : torch.nn.Module or None
     """
     def __init__(self, graph_layer, batch_norm, activation, dropout):
         super().__init__()
@@ -42,6 +53,22 @@ class GNNModule(nn.Module):
 
 
 def build_graph_layers(gnn_params):
+    """
+    Stack :class:`GNNModule` layers from a parameter dict.
+
+    Parameters
+    ----------
+    gnn_params : dict
+        Must contain ``layer``, ``layer_type``, ``sizes``, ``input_dim``, and
+        per-layer ``args`` (list of dicts). Optional: ``activation``, ``dropout``,
+        ``batch_norm``, ``heads`` (attention).
+
+    Returns
+    -------
+    layers : nn.ModuleList
+    out_dim : int
+        Output channel width after the last layer.
+    """
     layer_class = gnn_params['layer']
     layer_type = gnn_params.get('layer_type')  # default
     sizes = gnn_params['sizes']
@@ -190,7 +217,14 @@ def build_gnn_config():
 
 class CNNModule(nn.Module):
     """
+    One 1D convolution block with optional norm, activation, pooling, dropout.
 
+    Parameters
+    ----------
+    conv_layer : torch.nn.Module
+    batch_norm, activation, max_pool, dropout : torch.nn.Module or None
+    kernel_size, stride, pool_kernel_size : int
+        Shape hyperparameters recorded for debugging or padding logic.
     """
     def __init__(self, conv_layer, batch_norm, activation, max_pool, dropout, kernel_size, stride, pool_kernel_size):
         super().__init__()
@@ -393,7 +427,14 @@ def build_cnn_config():
 
 class RNNModule(nn.Module):
     """
+    Pack-padded recurrent cell with fixed ``total_length`` when unpacking.
 
+    Parameters
+    ----------
+    recurrent_layer : torch.nn.Module
+        ``nn.LSTM``, ``nn.GRU``, or ``nn.RNN`` with ``batch_first=True``.
+    max_len : int
+        ``total_length`` passed to :func:`torch.nn.utils.rnn.pad_packed_sequence`.
     """
     def __init__(self, recurrent_layer, max_len: int):
         super().__init__()
@@ -408,11 +449,29 @@ class RNNModule(nn.Module):
         return unpacked_out, lengths
 
 
-def build_recurrent_layers(self):
+def build_recurrent_layers(rnn_params: dict):
+    """
+    Build an embedding plus recurrent stack for sequence inputs.
 
-    alphabet_len = self.rnn_params['alphabet_len']
-    embedding_dim = self.rnn_params['embedding_dim']  # i.e. in_channels for the first layer
-    padding_idx = self.rnn_params.get('padding_idx', 0)
+    Parameters
+    ----------
+    rnn_params : dict
+        Must include ``alphabet_len``, ``embedding_dim``, ``hidden_size``,
+        ``max_len``, and ``layer`` (one of ``'lstm'``, ``'gru'``, ``'rnn'``).
+        Optional keys: ``padding_idx`` (default 0).
+
+    Returns
+    -------
+    rnn_blocks : nn.ModuleList
+        Wrapped RNN modules.
+    rnn_embedding : nn.Embedding
+        Token embedding layer.
+    output_dim : int
+        Hidden size of the recurrent layer.
+    """
+    alphabet_len = rnn_params['alphabet_len']
+    embedding_dim = rnn_params['embedding_dim']  # i.e. in_channels for the first layer
+    padding_idx = rnn_params.get('padding_idx', 0)
 
     rnn_embedding = nn.Embedding(
         num_embeddings=alphabet_len,
@@ -420,8 +479,8 @@ def build_recurrent_layers(self):
         padding_idx=padding_idx
     )
 
-    rnn_type = self.rnn_params.get('layer', 'gru').lower()
-    hidden_size = self.rnn_params.get('hidden_size')
+    rnn_type = rnn_params.get('layer', 'gru').lower()
+    hidden_size = rnn_params.get('hidden_size')
     rnn_blocks = []  # for potential extension to chained recurrent layers
 
     # Build RNN layer
@@ -434,7 +493,7 @@ def build_recurrent_layers(self):
     else:
         raise ValueError(f"Unsupported RNN layer type: {rnn_type}")
 
-    max_len = self.rnn_params['max_len']
+    max_len = rnn_params['max_len']
     rnn_blocks.append(
         RNNModule(
             recurrent_layer=rnn_layer,
