@@ -3,22 +3,17 @@ from torch import nn
 
 def get_activation_fn(name: str) -> nn.Module:
     """
-    Return a non-parametric activation module by name.
+    Return a built-in activation module by name (no learnable parameters).
 
     Parameters
     ----------
     name : str
-        One of ``'relu'``, ``'leaky_relu'``, ``'gelu'``, ``'tanh'`` (case-insensitive).
+        One of relu, leaky_relu, gelu, tanh. Matching is case-insensitive.
 
     Returns
     -------
-    torch.nn.Module
-        Instantiated activation.
-
-    Raises
-    ------
-    ValueError
-        If ``name`` is not supported.
+    act : nn.Module
+        A fresh activation instance (e.g. nn.ReLU()).
     """
     name = name.lower()
     if name == 'relu':

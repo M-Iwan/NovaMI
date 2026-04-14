@@ -1,9 +1,3 @@
-"""
-SMILES / SELFIES / DeepSMILES encoders and graph featurization for ``novami.deep``.
-
-Active classes: :class:`GraphVectorizer`, :class:`StringVectorizer`. Legacy
-:class:`MMGV` is loaded on demand via :func:`__getattr__` (see ``deprecated.deep.mmgv``).
-"""
 from collections import Counter
 from typing import Union, Iterable, List, Tuple
 
@@ -20,19 +14,19 @@ from torch_geometric.data import Data as Graph
 
 class GraphVectorizer:
     """
-    Encode molecules as ``torch_geometric.data.Data`` graphs from SMILES.
+    Turn SMILES into torch_geometric Data (x, edge_index, edge_attr).
 
-    Lighter-weight alternative to the legacy :class:`deprecated.deep.mmgv.MMGV`
-    API; pairs with :class:`novami.deep.dataset.MMDataset` modality ``'graph'``.
+    Simpler than the legacy MMGV class in deprecated.deep.mmgv; use with MMDataset
+    modality graph.
 
     Parameters
     ----------
     atom_encoding : dict, optional
-        Map element symbol to one-hot index; default covers common organic elements.
+        Element symbol to index; default covers common organic elements.
     bond_encoding : dict, optional
-        Map RDKit bond type string to index.
+        Bond type string to index; default SINGLE, DOUBLE, TRIPLE, AROMATIC.
     suppress : bool, optional
-        If True, disable RDKit logs. Default is True.
+        If True, silence RDKit logs. Default is True.
     """
 
     def __init__(self, atom_encoding: dict = None, bond_encoding: dict = None,
@@ -144,7 +138,17 @@ class GraphVectorizer:
 
     def from_smiles(self, smiles: str):
         """
-        Change to work internally on np.ndarray. Missing values are expected to be nan
+        Build one unlabeled graph Data object from a SMILES string.
+
+        Parameters
+        ----------
+        smiles : str
+            SMILES parsed with RDKit sanitize=True.
+
+        Returns
+        -------
+        data : torch_geometric.data.Data
+            Node features, edge_index, edge_attr.
         """
 
         mol = Chem.MolFromSmiles(smiles, sanitize=True)
@@ -161,6 +165,18 @@ class GraphVectorizer:
         return Graph(**graph_data)
 
     def encode(self, smiles: Union[str, Iterable[str]]):
+        """
+        Vectorize one SMILES or many; returns a list of Data graphs.
+
+        Parameters
+        ----------
+        smiles : str or iterable of str
+
+        Returns
+        -------
+        list
+            torch_geometric Data instances in input order.
+        """
         if isinstance(smiles, str):
             return [self.from_smiles(smiles)]
         else:
@@ -172,6 +188,24 @@ class GraphVectorizer:
 
 
 class StringVectorizer:
+    """
+    Tokenize SMILES, DeepSMILES, or SELFIES into integer indices for embedding layers.
+
+    Call prepare_alphabet on a corpus before from_smiles if alphabet is None.
+
+    Parameters
+    ----------
+    alphabet : tuple, optional
+        Token strings in vocabulary order; if None, set later via prepare_alphabet.
+    alphabet_type : str, optional
+        One of smiles, deepsmiles, selfies. Default is smiles.
+    max_length : int, optional
+        Maximum token count after split; longer strings raise ValueError.
+    padding : bool, optional
+        If True, pad sequences to max_length with pad token when alphabet is built.
+    suppress : bool, optional
+        If True, silence RDKit logs. Default is True.
+    """
     def __init__(self, alphabet: tuple = None, alphabet_type: str = 'smiles', max_length: int = None,
                  padding: bool = True, suppress: bool = True):
 
@@ -196,6 +230,21 @@ class StringVectorizer:
         self.idx2char = {idx: char for idx, char in enumerate(self.alphabet)} if self.alphabet is not None else None
 
     def from_smiles(self, smiles: str):
+        """
+        Encode one string to (int32 token tensor, int length).
+
+        Parameters
+        ----------
+        smiles : str
+            Input in the format given by alphabet_type.
+
+        Returns
+        -------
+        tensor : torch.Tensor
+            int32, shape (seq_len,) or (max_length,) if padding.
+        length : int
+            True token count before padding.
+        """
         if self.char2idx is None:
             raise RuntimeError("Alphabet not initialized. Call prepare_alphabet to obtain it.")
 
@@ -211,6 +260,17 @@ class StringVectorizer:
         return tensor, length
 
     def encode(self, smiles: Union[str, Iterable[str]]):
+        """
+        Same as from_smiles but accepts a str or iterable of str; always returns a list.
+
+        Parameters
+        ----------
+        smiles : str or iterable of str
+
+        Returns
+        -------
+        list [tensor, length]
+        """
         if isinstance(smiles, str):
             return [self.from_smiles(smiles)]
         else:
@@ -221,9 +281,34 @@ class StringVectorizer:
                                  "or iterable of strings")
 
     def decode(self, indices: List[int]):
+        """
+        Map token indices back to a string (best-effort for SMILES-like alphabets).
+
+        Parameters
+        ----------
+        indices : list of int
+            Token indices.
+
+        Returns
+        -------
+        str
+            Concatenated characters; unknown indices become unk.
+        """
         return ''.join(self.idx2char.get(i, '<unk>') for i in indices)
 
     def convert(self, smiles: str):
+        """
+        Normalize input to the token string form used by split (SMILES as-is, etc.).
+
+        Parameters
+        ----------
+        smiles : str
+
+        Returns
+        -------
+        str
+            SMILES, DeepSMILES, or SELFIES string depending on alphabet_type.
+        """
         if self.alphabet_type == 'smiles':
             return smiles
         elif self.alphabet_type == 'deepsmiles':
@@ -234,6 +319,21 @@ class StringVectorizer:
             raise ValueError(f"Unsupported alphabet type: {self.alphabet_type}")
 
     def split(self, string):
+        """
+        Regex tokenization and length; enforces max_length when set.
+
+        Parameters
+        ----------
+        string : str
+            Already converted (e.g. via convert).
+
+        Returns
+        -------
+        tokens : list
+            Token strings.
+        length : int
+            len(tokens).
+        """
         split_string = self.regex_patterns[self.alphabet_type].findall(string)
         length = len(split_string)
 
@@ -243,10 +343,37 @@ class StringVectorizer:
         return split_string, length
 
     def pad(self, string, length):
+        """
+        Append pad tokens so token list length equals max_length.
+
+        Parameters
+        ----------
+        string : list
+            Token list after split.
+        length : int
+            Original length before padding.
+
+        Returns
+        -------
+        list
+            Padded token list.
+        """
         return string + ['<pad>'] * (self.max_length - length)
 
     def prepare_alphabet(self, smiles: List[str]):
+        """
+        Build vocabulary from corpus token frequency (most common first).
 
+        Parameters
+        ----------
+        smiles : list of str
+            Corpus of SMILES (or converted strings) for counting.
+
+        Returns
+        -------
+        alphabet : list
+            Token list with unk and optional pad prepended when padding is True.
+        """
         token_counter = Counter()
 
         for smi in smiles:
@@ -260,17 +387,3 @@ class StringVectorizer:
             alphabet = ['<pad>'] + alphabet
 
         return alphabet
-
-
-def __getattr__(name):
-    """Re-export legacy :class:`MMGV` from ``deprecated.deep.mmgv``."""
-    import warnings
-    if name == "MMGV":
-        warnings.warn(
-            "MMGV has moved to deprecated.deep.mmgv; prefer GraphVectorizer for new code.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        from deprecated.deep.mmgv import MMGV as _MMGV
-        return _MMGV
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

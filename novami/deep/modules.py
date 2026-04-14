@@ -1,5 +1,5 @@
 """
-Reusable GNN / CNN / RNN blocks and layer factories for ``novami.deep`` models.
+Reusable graph, convolution-on-sequence, RNN, and MLP blocks for novami.deep models.
 """
 import inspect
 from typing import List
@@ -13,15 +13,16 @@ from novami.deep.utils import get_activation_fn
 
 class GNNModule(nn.Module):
     """
-    One message-passing block: conv → optional norm → activation → dropout.
+    One graph conv step: convolution, optional batch norm, activation, dropout.
 
     Parameters
     ----------
-    graph_layer : torch.nn.Module
-        Typically a PyG conv layer.
-    batch_norm : torch.nn.Module or None
-    activation : torch.nn.Module or None
-    dropout : torch.nn.Module or None
+    graph_layer : nn.Module
+        Typically a PyTorch Geometric conv layer.
+    batch_norm : nn.Module or None
+        BatchNorm1d on node features, or None.
+    activation : nn.Module or None
+    dropout : nn.Module or None
     """
     def __init__(self, graph_layer, batch_norm, activation, dropout):
         super().__init__()
@@ -54,20 +55,22 @@ class GNNModule(nn.Module):
 
 def build_graph_layers(gnn_params):
     """
-    Stack :class:`GNNModule` layers from a parameter dict.
+    Build a nn.ModuleList of GNNModule layers from a single parameter dict.
 
     Parameters
     ----------
     gnn_params : dict
-        Must contain ``layer``, ``layer_type``, ``sizes``, ``input_dim``, and
-        per-layer ``args`` (list of dicts). Optional: ``activation``, ``dropout``,
-        ``batch_norm``, ``heads`` (attention).
+        Required keys: layer (class), layer_type (convolutional, attention, edge),
+        sizes (list of int output dims per layer), input_dim (int).
+        Typical optional keys: args (list of dicts per layer), activation, dropout,
+        batch_norm, heads (for attention).
 
     Returns
     -------
     layers : nn.ModuleList
+        Ordered GNN blocks.
     out_dim : int
-        Output channel width after the last layer.
+        Node feature width after the last layer.
     """
     layer_class = gnn_params['layer']
     layer_type = gnn_params.get('layer_type')  # default
@@ -217,14 +220,19 @@ def build_gnn_config():
 
 class CNNModule(nn.Module):
     """
-    One 1D convolution block with optional norm, activation, pooling, dropout.
+    One 1D convolution step: Conv1d, optional norm, activation, max pool, dropout.
 
     Parameters
     ----------
-    conv_layer : torch.nn.Module
-    batch_norm, activation, max_pool, dropout : torch.nn.Module or None
-    kernel_size, stride, pool_kernel_size : int
-        Shape hyperparameters recorded for debugging or padding logic.
+    conv_layer : nn.Module
+    batch_norm : nn.Module or None
+    activation : nn.Module or None
+    max_pool : nn.Module or None
+    dropout : nn.Module or None
+    kernel_size : int
+    stride : int
+    pool_kernel_size : int
+        Used to update sequence lengths after the block.
     """
     def __init__(self, conv_layer, batch_norm, activation, max_pool, dropout, kernel_size, stride, pool_kernel_size):
         super().__init__()
@@ -259,6 +267,22 @@ class CNNModule(nn.Module):
 
 
 def build_conv_layers(cnn_params):
+    """
+    Character embedding plus a stack of 1D CNNModule layers for sequence input.
+
+    Parameters
+    ----------
+    cnn_params : dict
+        alphabet_len, embedding_dim; optional padding_idx, sizes, kernel_size,
+        stride, pool_size, activation, dropout, batch_norm (see implementation).
+
+    Returns
+    -------
+    cnn_blocks : nn.ModuleList
+    cnn_embedding : nn.Embedding
+    out_channels : int
+        Channel width after the last conv block.
+    """
     alphabet_len = cnn_params['alphabet_len']
     embedding_dim = cnn_params['embedding_dim']  # i.e. in_channels for the first layer
     padding_idx = cnn_params.get('padding_idx', 0)
@@ -427,14 +451,14 @@ def build_cnn_config():
 
 class RNNModule(nn.Module):
     """
-    Pack-padded recurrent cell with fixed ``total_length`` when unpacking.
+    Runs pack_padded_sequence -> RNN -> pad_packed_sequence with a fixed max length.
 
     Parameters
     ----------
-    recurrent_layer : torch.nn.Module
-        ``nn.LSTM``, ``nn.GRU``, or ``nn.RNN`` with ``batch_first=True``.
+    recurrent_layer : nn.Module
+        nn.LSTM, nn.GRU, or nn.RNN with batch_first=True.
     max_len : int
-        ``total_length`` passed to :func:`torch.nn.utils.rnn.pad_packed_sequence`.
+        total_length passed to pad_packed_sequence.
     """
     def __init__(self, recurrent_layer, max_len: int):
         super().__init__()
@@ -451,23 +475,21 @@ class RNNModule(nn.Module):
 
 def build_recurrent_layers(rnn_params: dict):
     """
-    Build an embedding plus recurrent stack for sequence inputs.
+    Token embedding plus one RNNModule (LSTM, GRU, or vanilla RNN).
 
     Parameters
     ----------
     rnn_params : dict
-        Must include ``alphabet_len``, ``embedding_dim``, ``hidden_size``,
-        ``max_len``, and ``layer`` (one of ``'lstm'``, ``'gru'``, ``'rnn'``).
-        Optional keys: ``padding_idx`` (default 0).
+        alphabet_len, embedding_dim, hidden_size, max_len, and layer (lstm, gru,
+        or rnn). Optional padding_idx, default 0.
 
     Returns
     -------
     rnn_blocks : nn.ModuleList
-        Wrapped RNN modules.
+        Single RNNModule in a list for possible future chaining.
     rnn_embedding : nn.Embedding
-        Token embedding layer.
     output_dim : int
-        Hidden size of the recurrent layer.
+        RNN hidden size.
     """
     alphabet_len = rnn_params['alphabet_len']
     embedding_dim = rnn_params['embedding_dim']  # i.e. in_channels for the first layer
@@ -574,6 +596,28 @@ def build_rnn_config():
 
 def build_linear_layers(sizes: List[int], batch_norm: bool = True,
                         activation: str = 'relu', dropout: float = 0.0):
+    """
+    Fully connected stack: Linear blocks with optional BatchNorm, activation, dropout.
+
+    Parameters
+    ----------
+    sizes : list of int
+        Inclusive [in, hidden..., out]; at least two entries.
+    batch_norm : bool, optional
+        If True, add BatchNorm1d after each Linear (except where omitted by design).
+        Default is True.
+    activation : str, optional
+        Name passed to get_activation_fn. Default is relu.
+    dropout : float, optional
+        Dropout probability after each block when > 0. Default is 0.0.
+
+    Returns
+    -------
+    net : nn.Sequential
+        The composed MLP.
+    lin_out_size : int
+        Final output dimension (last entry of sizes).
+    """
     def init_linear(layer):
         if isinstance(layer, nn.Linear):
             nn.init.xavier_normal_(layer.weight)

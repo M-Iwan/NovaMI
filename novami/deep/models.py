@@ -1,7 +1,3 @@
-"""
-To be written
-"""
-
 import os
 import inspect
 from copy import deepcopy
@@ -22,15 +18,17 @@ from torch_geometric.nn import global_mean_pool
 
 class MMTUnit(ABC, nn.Module):
     """
-    Abstract base for multi-task PyTorch models with masked weighted loss.
+    Abstract base class for deep learning models.
 
-    Supports multimodal inputs, multitask predictions, and training using sparse
-    matrices.
-
-    If batches include ``group`` (from :class:`novami.deep.loader.MMLoader`), each
-    row may carry multiple string tags (e.g. ``numpy.array(['Small', 'Acid'])``).
-    :meth:`mw_loss` then adds a ``'Group'`` entry: per-tag weighted partial loss,
-    aggregated across epochs via :meth:`combine_mw_loss` and :meth:`normalize_mw_loss`.
+    Parameters
+    ----------
+    device : str, optional
+        Device used for calculations. Default is cpu.
+    num_task : int, optional
+        Number of tasks (output width for regression). Default is 1.
+    model_name : str, optional
+        Used in default checkpoint filenames; also stored as name and model_name.
+        Default is Unit.
     """
     def __init__(self, device: str = 'cpu', num_task: int = 1, model_name: str = 'Unit'):
         super(MMTUnit, self).__init__()
@@ -49,15 +47,26 @@ class MMTUnit(ABC, nn.Module):
 
     @abstractmethod
     def forward(self, batch: dict):
-        """Compute predictions for one batch (dict or :class:`novami.deep.dataset.MMBatch`)."""
+        """
+        Parameters
+        ----------
+        batch : dict
+            Mapping of batch keys to tensors (dict-like MMBatch is fine).
+        """
 
     @staticmethod
     @abstractmethod
     def score(y_true: np.ndarray, y_pred: np.ndarray, y_wgts: np.ndarray):
-        """Return a dict of scalar metrics for aggregated predictions."""
+        """
+        Parameters
+        ----------
+        y_true : np.ndarray
+        y_pred : np.ndarray
+        y_wgts : np.ndarray
+        """
 
     def grad_norm(self):
-        """Calculate gradient norm."""
+        """L2 norm of stacked parameter gradients (for logging)."""
         total_norm = 0
         for p in self.parameters():
             if p.grad is not None:
@@ -93,7 +102,7 @@ class MMTUnit(ABC, nn.Module):
             if group is None and isinstance(batch, dict):
                 group = batch.get('group')
 
-            batch_loss = self.mw_loss(
+            batch_loss = self.loss(
                 y_pred=y_pred,
                 y_true=y_true,
                 y_wgts=y_wgts,
@@ -113,8 +122,8 @@ class MMTUnit(ABC, nn.Module):
         if self.scheduler is not None:
             self.scheduler.step()
 
-        epoch_loss = reduce(self.combine_mw_loss, epoch_losses)
-        epoch_loss = self.normalize_mw_loss(epoch_loss)
+        epoch_loss = reduce(self.combine_loss, epoch_losses)
+        epoch_loss = self.normalize_loss(epoch_loss)
 
         epoch_metrics = self.mw_metrics(**self.pack_epoch_data(epoch_data))
 
@@ -145,7 +154,7 @@ class MMTUnit(ABC, nn.Module):
                 if group is None and isinstance(batch, dict):
                     group = batch.get('group')
 
-                batch_loss = self.mw_loss(
+                batch_loss = self.loss(
                     y_pred=y_pred,
                     y_true=y_true,
                     y_wgts=y_wgts,
@@ -154,8 +163,8 @@ class MMTUnit(ABC, nn.Module):
 
                 epoch_losses.append(batch_loss)
 
-        epoch_loss = reduce(self.combine_mw_loss, epoch_losses)
-        epoch_loss = self.normalize_mw_loss(epoch_loss)
+        epoch_loss = reduce(self.combine_loss, epoch_losses)
+        epoch_loss = self.normalize_loss(epoch_loss)
 
         epoch_metrics = self.mw_metrics(**self.pack_epoch_data(epoch_data))
 
@@ -262,16 +271,9 @@ class MMTUnit(ABC, nn.Module):
 
         return torch.cat(predictions, dim=0).detach().cpu().numpy()
 
-    def mw_loss(self, y_pred, y_true, y_wgts, group: Optional[List[Any]] = None):
+    def loss(self, y_pred, y_true, y_wgts, group: Optional[List[Any]] = None):
         """
-        Per-element loss weighted by ``y_wgts`` with NaN masking on ``y_true``.
-
-        When ``group`` is provided (length ``B`` matching the batch), each entry
-        should be an iterable of string labels (e.g. ``numpy.array(['Small', 'Acid'])``).
-        Partial weighted sums are computed for every unique label appearing in the
-        batch (rows containing that label contribute). Keys are stored under
-        ``batch_loss['Group']`` as ``label -> (loss_sum, weight_sum)`` for
-        :meth:`combine_mw_loss` / :meth:`normalize_mw_loss`.
+        Masked, weighted loss.
 
         Parameters
         ----------
@@ -279,14 +281,13 @@ class MMTUnit(ABC, nn.Module):
         y_true : torch.Tensor
         y_wgts : torch.Tensor
         group : list, optional
-            Per-row group tag iterables (length ``B``).
+            Length B; each element iterable of tags for that row.
 
         Returns
         -------
-        dict
-            ``'Total'`` and ``'Task'`` entries, each ``(value, weight)`` tensors
-            for aggregation with :meth:`combine_mw_loss`. Optional ``'Group'``
-            mapping string labels to ``(value, weight)`` tensors.
+        batch_loss : dict
+            Keys Total and Task map to (scalar loss sum, scalar weight sum).
+            Optionally Group maps each tag string to the same tuple shape.
         """
 
         mask = ~torch.isnan(y_true)
@@ -349,7 +350,7 @@ class MMTUnit(ABC, nn.Module):
         return batch_loss
 
     @staticmethod
-    def combine_mw_loss(loss_1, loss_2):
+    def combine_loss(loss_1, loss_2):
         total_loss = loss_1['Total'][0] + loss_2['Total'][0]
         total_wgt = loss_1['Total'][1] + loss_2['Total'][1]
 
@@ -382,7 +383,7 @@ class MMTUnit(ABC, nn.Module):
         return out
 
     @staticmethod
-    def normalize_mw_loss(mw_loss):
+    def normalize_loss(mw_loss):
         per_sample_loss = mw_loss['Total'][0] / mw_loss['Total'][1]
         per_sample_loss = np.round(per_sample_loss.detach().cpu().numpy(), 5)
         per_task_loss = mw_loss['Task'][0] / mw_loss['Task'][1]
@@ -407,8 +408,17 @@ class MMTUnit(ABC, nn.Module):
 
     def mw_metrics(self, y_true, y_pred, y_wgts):
         """
-        Aggregate predictions based on different criteria. Intended to be used
-        with classical ML metrics, purely on predictions
+        Concatenate epoch tensors and call score() for overall and per-task views.
+
+        Parameters
+        ----------
+        y_true, y_pred, y_wgts : torch.Tensor
+            Stacked batch outputs (same leading dimension).
+
+        Returns
+        -------
+        out : dict
+            Total: dict from score on flattened arrays; Task: dict keyed Task_0, ...
         """
         y_true = y_true.detach().cpu().numpy()
         y_pred = y_pred.detach().cpu().numpy()
@@ -440,6 +450,20 @@ class MMTUnit(ABC, nn.Module):
         return packed_data
 
     def set_loss_function(self, loss_fn=torch.nn.BCEWithLogitsLoss, loss_params: dict = None):
+        """
+        Instantiate the per-element loss used in mw_loss.
+
+        Parameters
+        ----------
+        loss_fn : callable
+            Class or factory returning a torch loss module.
+        loss_params : dict, optional
+            Keyword arguments for the loss constructor.
+
+        Notes
+        -----
+        The loss must use reduction='none' so mw_loss can weight per element.
+        """
         if callable(loss_fn):
             self.loss_fn = loss_fn(**loss_params) if loss_params else loss_fn()
         else:
@@ -512,26 +536,25 @@ class MMTUnit(ABC, nn.Module):
 
 class TestModel(MMTUnit):
     """
-    Minimal GNN + MLP regression head (template for :class:`MMTUnit` subclasses).
+    Example MMTUnit: PyG GNN stack, global mean pool, then a linear MLP head.
 
     Parameters
     ----------
     device : str, optional
-        Device hint for training code. Default ``'cpu'``.
+        Passed to MMTUnit. Default is cpu.
     num_task : int, optional
         Number of regression outputs. Default is 1.
     model_name : str, optional
-        Passed to :class:`MMTUnit`. Default ``'Unit'``.
+        Passed to MMTUnit. Default is Unit.
     gnn_params : dict, optional
-        Arguments for :func:`novami.deep.modules.build_graph_layers`. Must
-        include ``layer``, ``layer_type`` (``'convolutional'`` | ``'attention'`` |
-        ``'edge'``), ``sizes``, ``input_dim``, and optional ``input_name`` (graph
-        batch key; default ``'Graph'``).
+        Dict for build_graph_layers: layer, layer_type (convolutional, attention,
+        edge), sizes, input_dim, optional input_name (batch key for the graph;
+        default Graph).
     lin_params : dict, optional
-        Keyword arguments for :func:`novami.deep.modules.build_linear_layers`
-        (without ``sizes`` first segment; output width is filled from GNN).
+        Keyword args for build_linear_layers; the first segment of sizes is
+        filled from the GNN output width and the last from num_task.
     max_norm : float, optional
-        Max norm for gradient clipping. Default is 1.0.
+        Gradient clipping max norm in fit_epoch. Default is 1.0.
     """
     def __init__(self, device: str = 'cpu', num_task: int = 1, model_name: str = 'Unit',
                  gnn_params: dict=None, lin_params: dict=None, max_norm: float = 1.0):
@@ -548,18 +571,18 @@ class TestModel(MMTUnit):
 
     def forward(self, batch_input: dict):
         """
-        Pool node embeddings and apply the linear head.
+        Message passing on the graph batch, then global mean pool and lin_layers.
 
         Parameters
         ----------
         batch_input : dict
-            Must contain the graph batch under ``gnn_params['input_name']``
-            (default key ``'Graph'``).
+            Must contain the batched graph under gnn_params['input_name']
+            (default key Graph).
 
         Returns
         -------
-        torch.Tensor
-            Predictions of shape ``(batch, num_task)``.
+        x_out : torch.Tensor
+            Shape (batch, num_task).
         """
         graph_batch = batch_input[self.gnn_input_name]
 
@@ -575,17 +598,18 @@ class TestModel(MMTUnit):
     @staticmethod
     def score(y_true: np.ndarray, y_pred: np.ndarray, y_wgts: np.ndarray):
         """
-        Regression metrics (R2, MAE, RMSE) with NaNs removed and ``y_wgts`` applied.
+        R2, MAE, RMSE from sklearn after dropping NaN y_true and applying weights.
 
         Parameters
         ----------
-        y_true, y_pred, y_wgts : np.ndarray
-            Flat or aligned arrays after masking.
+        y_true : np.ndarray
+        y_pred : np.ndarray
+        y_wgts : np.ndarray
 
         Returns
         -------
-        dict
-            Metric name to rounded float.
+        metrics : dict
+            Keys R2, MAE, RMSE with values rounded to 5 decimals.
         """
         mask = ~np.isnan(y_true)
         y_true = y_true[mask]
@@ -599,18 +623,3 @@ class TestModel(MMTUnit):
         }
 
         return metrics
-
-
-def __getattr__(name):
-    """Lazy re-export of legacy symbols with a deprecation warning."""
-    import warnings
-    if name == "GNNRegressor":
-        warnings.warn(
-            "GNNRegressor has moved to deprecated.deep.gnn_regressor; prefer "
-            "TestModel (MMTUnit) for new code.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        from deprecated.deep.gnn_regressor import GNNRegressor as _GNNRegressor
-        return _GNNRegressor
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

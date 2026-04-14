@@ -1,6 +1,3 @@
-"""
-Multi-modal Polars-backed :class:`torch.utils.data.Dataset` and batch container.
-"""
 import torch
 from torch.utils.data import Dataset
 import polars as pl
@@ -9,22 +6,29 @@ from typing import Dict, Any, List, Optional, Union
 
 class MMDataset(Dataset):
     """
-    Multi-modal dataset for strings, graphs, descriptors, images, targets, and weights.
+    Dataset over a Polars DataFrame where each column is typed by a modality
+    string (string, graph, descriptor, image, target, sample_weight, group).
 
     Parameters
     ----------
     df: pl.DataFrame
-        A Polars DataFrame containing at least one feature type and target values.
-    config: dict    
-        A dictionary mapping column names to supported modality types:
-            - 'string': Tuple[torch.Tensor (tokens), int (length)] from StringVectorizer
-            - 'graph': torch_geometric.Data from GraphVectorizer
-            - 'descriptor': 1D torch.Tensor [desc_size]
-            - 'image': 2D/3D torch.Tensor
-            - 'target': 1D torch.Tensor of shape [num_task]
-            - 'sample_weight': 1D torch.Tensor; same shape as 'target'
-            - 'group': String labels per row (e.g. ``numpy.array(['Small', 'Acid'])``).
-              The source column is renamed to ``group`` in the dataframe; batch key is ``'group'``.
+        Must contain every column listed in config.
+    config: dict
+        Maps column name to modality:
+
+        - string: tuple (token indices tensor, length int), from StringVectorizer
+        - graph: torch_geometric Data, from GraphVectorizer
+        - descriptor, image: 1D or higher torch.Tensor per row
+        - target: label tensor; exactly one column must use this
+        - sample_weight: weights matching target shape (optional)
+        - group: per-row group tags (e.g. numpy array of strings); column stored as group
+
+        Multiple columns may use string, graph, descriptor, or image. Only one
+        target, at most one sample_weight, and at most one group are allowed.
+
+    Notes
+    -----
+    At least one feature modality (string, graph, descriptor, or image) is required.
     """
 
     SUPPORTED_MODALITIES = {
@@ -81,8 +85,7 @@ class MMDataset(Dataset):
         self._validate_config()
 
     def _validate_config(self):
-        """Validate internal ``self.config`` after construction."""
-
+        """Check that internal modality strings are all supported."""
         unsupported = set(self.config.values()) - self.SUPPORTED_MODALITIES
         if unsupported:
             raise ValueError(f"Unsupported modalities: {unsupported}")
@@ -92,13 +95,18 @@ class MMDataset(Dataset):
 
     def __getitem__(self, idx: int) -> Dict[str, Any]:
         """
-        Return one sample as a dict keyed like ``self.config`` / standard batch keys.
+        One row as a dict: feature keys match the dataset config; y_true,
+        y_wgts, and group appear when those modalities were configured.
+
+        Parameters
+        ----------
+        idx : int
+            Row index in the (possibly renamed) DataFrame.
 
         Returns
         -------
-        dict
-            Feature keys match ``self.config``; ``'y_true'`` / ``'y_wgts'`` / ``'group'``
-            when present.
+        sample : dict
+            Values taken from that row by modality.
         """
         row = self.df.row(idx, named=True)
         sample: Dict[str, Any] = {}
@@ -120,43 +128,50 @@ class MMDataset(Dataset):
         return sample
 
     def get_feature_columns(self) -> List[str]:
-        """Return a copy of feature column names."""
+        """Names of columns kept as features (not renamed to y_true / y_wgts)."""
         return self.feature_columns.copy()
 
     def get_target_column(self) -> Optional[str]:
-        """Original target column name before rename to ``y_true``."""
+        """Original target column name before it was renamed to y_true."""
         return self.target_column
 
     def get_group_column(self) -> Optional[str]:
-        """Original group column name before rename to ``group``."""
+        """Original group column name before it was renamed to group."""
         return self.group_column
 
     def get_modality_info(self) -> Dict[str, List[str]]:
-        """Map modality strings to lists of column / batch keys."""
+        """
+        Invert the config: modality string to list of column / batch keys.
+
+        Returns
+        -------
+        modality_info : dict
+            Keys are modality names; values are lists of keys in self.config.
+        """
         modality_info: Dict[str, List[str]] = {}
         for col_name, modality in self.config.items():
             modality_info.setdefault(modality, []).append(col_name)
         return modality_info
 
     def has_sample_weights(self) -> bool:
-        """True if a sample-weight column was provided."""
+        """Whether a sample_weight column was provided."""
         return self.weight_column is not None
 
     def has_groups(self) -> bool:
-        """True if a group column was provided."""
+        """Whether a group column was provided."""
         return self.group_column is not None
 
 
 class MMBatch:
     """
-    Dict-like batch produced by :class:`novami.deep.loader.MMLoader` collate.
+    Batched sample dict.
 
     Parameters
     ----------
     data : dict
         Batched tensors and other values.
     config : dict
-        Same modality mapping as the source :class:`MMDataset` 
+        Same modality mapping as the MMDataset that produced the rows
     """
 
     def __init__(self, data: Dict[str, Any], config: Dict[str, str]):
@@ -182,29 +197,40 @@ class MMBatch:
         return self.data.items()
 
     def get_modality(self, key: str) -> Optional[str]:
-        """Modality string for ``key``, if known."""
+        """Return the modality string for a batch key, if present in config."""
         return self.config.get(key)
 
     def get_by_modality(self, modality: str) -> Dict[str, Any]:
-        """All batch entries whose modality equals ``modality``."""
+        """
+        All entries in data whose config modality equals the given string.
+
+        Parameters
+        ----------
+        modality : str
+            One of the modality names used in MMDataset (e.g. 'graph').
+
+        Returns
+        -------
+        out : dict
+            Subset of self.data for matching keys.
+        """
         return {key: self.data[key] for key, mod in self.config.items()
                 if mod == modality and key in self.data}
 
     def to(self, device: Union[str, torch.device], non_blocking: bool = False):
         """
-        Move tensors (and ``torch_geometric`` objects) to ``device``.
+        Move tensors, string tuples of tensors, and objects with a .to(device) to the given device.
 
         Parameters
         ----------
         device : str or torch.device
-            Target device.
+            Target device for tensors.
         non_blocking : bool, optional
-            Passed to ``tensor.to(...)`` where applicable.
+            Forwarded to tensor.to(...). Default is False.
 
         Returns
         -------
-        MMBatch
-            New batch sharing the same ``config``.
+        batch : MMBatch
         """
         new_data = {}
         for key, value in self.data.items():

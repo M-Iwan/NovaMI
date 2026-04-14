@@ -10,24 +10,25 @@ from novami.deep.dataset import MMDataset, MMBatch
 
 class MMLoader:
     """
-    Multi-Modal DataLoader that efficiently batches different modality types.
+    Wraps torch.utils.data.DataLoader with a collate function that stacks or
+    batches each modality (strings with masks, graphs via PyG Batch, tensors, groups).
 
     Parameters
     ----------
-    dataset: MMDataset
-        The multi-modal dataset to load from
-    batch_size: int, default=32
-        Number of samples per batch
-    shuffle: bool, default=False
-        Whether to shuffle the data
-    num_workers: int, default=0
-        Number of worker processes for data loading
-    pin_memory: bool, default=False
-        Whether to use pinned memory for faster GPU transfer
-    drop_last: bool, default=False
-        Whether to drop the last incomplete batch
+    dataset : MMDataset
+        Source dataset.
+    batch_size : int, optional
+        Batch size. Default is 32.
+    shuffle : bool, optional
+        Whether to shuffle indices each epoch. Default is False.
+    num_workers : int, optional
+        Worker processes for the DataLoader. Default is 0.
+    pin_memory : bool, optional
+        Passed through to DataLoader. Default is False.
+    drop_last : bool, optional
+        Whether to drop the last incomplete batch. Default is False.
     **kwargs
-        Additional arguments passed to PyTorch DataLoader
+        Any other keyword arguments forwarded to torch.utils.data.DataLoader.
     """
 
     def __init__(
@@ -45,7 +46,6 @@ class MMLoader:
         self.config = dataset.config
         self.modality_info = dataset.get_modality_info()
 
-        # Create the underlying PyTorch DataLoader
         self.dataloader = DataLoader(
             dataset=dataset,
             batch_size=batch_size,
@@ -59,7 +59,17 @@ class MMLoader:
 
     def _collate_fn(self, batch: List[Dict[str, Any]]) -> MMBatch:
         """
-        Custom collate function that handles different modality types efficiently.
+        Stack list-of-dict samples into one MMBatch.
+
+        Parameters
+        ----------
+        batch : list of dict
+            Output of MMDataset.__getitem__ for each index in the batch.
+
+        Returns
+        -------
+        out : MMBatch
+            Collated tensors and structures; empty dict yields empty MMBatch.
         """
         if not batch:
             return MMBatch({}, self.config)
@@ -95,7 +105,6 @@ class MMLoader:
                 collated_data['y_wgts'] = torch.stack(values, dim=0)
 
             elif modality == 'group':
-                # List length B: each element is a string ndarray / list of group tags for that row.
                 collated_data['group'] = values
 
         if 'y_true' in collated_data and 'y_wgts' not in collated_data:
@@ -107,7 +116,19 @@ class MMLoader:
     @staticmethod
     def _create_attention_mask(tokens_list: List[torch.Tensor], lengths_list: List[int]) -> torch.Tensor:
         """
-        Create attention masks based on sequence lengths.
+        Boolean mask [batch, max_len] with True for valid token positions.
+
+        Parameters
+        ----------
+        tokens_list : list of Tensor
+            One 1D int tensor per row (variable length).
+        lengths_list : list of int
+            True length of each sequence (before padding).
+
+        Returns
+        -------
+        mask : Tensor
+            dtype bool, shape (batch_size, max_len).
         """
         batch_size = len(tokens_list)
         max_len = max(seq.size(0) for seq in tokens_list)
@@ -122,19 +143,30 @@ class MMLoader:
     @staticmethod
     def _collate_graphs(graphs: List) -> Any:
         """
-        Batch graph data using torch_geometric's batching.
+        Batch a list of torch_geometric Data objects when possible.
+
+        Parameters
+        ----------
+        graphs : list
+            PyG Data instances.
+
+        Returns
+        -------
+        batched : Batch or list
+            Batch.from_data_list(graphs) on success; on failure, the original list
+            and a warning.
         """
         try:
-            # Use torch_geometric's batching
             return GeometricBatch.from_data_list(graphs)
         except Exception as e:
             warnings.warn(f"Failed to batch graphs with torch_geometric: {e}. Returning as list.")
             return graphs
 
     def __iter__(self):
-        """Iterate over batches."""
+        """Yield MMBatch instances from the underlying DataLoader."""
         for batch in self.dataloader:
             yield batch
 
     def __len__(self):
+        """Number of batches per epoch."""
         return len(self.dataloader)
