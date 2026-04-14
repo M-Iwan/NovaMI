@@ -4,6 +4,7 @@
 - Extend functionality of group_k_neighbors_distance
 - Add W.I.P. Winsorization to DataTransformer
 - (Partially) clean the deep module
+- ``MMDataset`` / ``MMBatch``, ``MMLoader``, and ``MMTUnit`` as the primary deep stack; legacy ``GNNRegressor`` and ``MMGV`` moved under ``deprecated/deep/`` with optional re-exports
 - Calculations for Precision-Recall Curve AUC, Expected Calibration Error, Brier Score
 - New QCG template for KFold-like calculations
 
@@ -12,6 +13,7 @@
 
 [Removed]
 - A lot of old code from the deep module
+- ``novami/deep/model.py`` (MMMTGNN and backbones); use ``deprecated/deep/mmmtgnn.py`` instead
 
 
 # [0.3.4]: 25-02-2026
