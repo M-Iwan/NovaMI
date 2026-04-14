@@ -38,7 +38,7 @@ def validate_dataframe(df: pl.DataFrame, features_col: Optional[str] = None, tar
     if isinstance(df, pd.DataFrame):
         df = pl.from_pandas(df)
 
-    if not all([isinstance(features_col, (str, None)), isinstance(target_col, (str, None))]):
+    if not all([isinstance(features_col, (str, type(None))), isinstance(target_col, (str, type(None)))]):
         raise TypeError(f"Expected column names to be strings, got {type(features_col)} and {type(target_col)} instead.")
 
     if features_col is not None and features_col not in df.columns:
@@ -614,16 +614,20 @@ def collate_strat(df: pl.DataFrame, strat_col: Union[str, List[str]]):
         else:
             raise TypeError(f"Expected column to be one of <int, float, str>, got {col_type} instead.")
 
-    strat_df = pl.DataFrame({
-        f'Bin_{idx}': cast_column(df[col]) for idx, col in enumerate(strat_col)
-    })
+    if isinstance(strat_col, str):
+        strat_col = [strat_col]
 
-    df = pl.concat([
-        df,
-        strat_df.with_columns(
-            pl.concat_str([pl.col(col) for col in strat_col], separator=':').alias('Bin')
-        )[['Bin']]
-    ])
+    bin_cols = [f'Bin_{idx}' for idx, _ in enumerate(strat_col)]
+    strat_df = pl.DataFrame({
+        bin_col: cast_column(df[col]) for bin_col, col in zip(bin_cols, strat_col)
+    }).with_columns(
+        [pl.col(col).cast(pl.String) for col in bin_cols]
+    )
+
+    df = pl.concat([df, strat_df], how='horizontal')
+    df = df.with_columns(
+        pl.concat_str([pl.col(col) for col in bin_cols], separator=':').alias('Bin')
+    ).drop(bin_cols)
 
     return df
 
