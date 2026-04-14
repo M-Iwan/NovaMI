@@ -497,7 +497,7 @@ class MMMTGNN(nn.Module):
             self.logs['train_grad_norms'].append((epoch, train_grad_norms))
             self.epoch += 1
 
-            current_loss = train_loss['Total']
+            current_loss = train_loss.get('Total')
 
             if verbose > 0:
                 print(f"Epoch {epoch} train loss: {current_loss:.5f}")

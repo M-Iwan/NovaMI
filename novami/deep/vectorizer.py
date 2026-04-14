@@ -1,6 +1,6 @@
 import copy
 from collections import Counter
-from typing import Union, Iterable, List
+from typing import Union, Iterable, List, Tuple
 
 import numpy as np
 from rdkit import Chem, RDLogger
@@ -100,7 +100,7 @@ class GraphVectorizer:
 
         return bond_edges, bond_enc
 
-    def encode_mol_bonds(self, mol: Chem.rdchem.Mol) -> (np.ndarray, np.ndarray):
+    def encode_mol_bonds(self, mol: Chem.rdchem.Mol) -> Tuple[np.ndarray, np.ndarray]:
 
         if len(mol.GetBonds()) == 0:
             return np.array([0, 0]).reshape(2, 1), np.zeros(shape=(1, self.bond_encoding_size + 3))
@@ -168,9 +168,11 @@ class StringVectorizer:
         if suppress:
             RDLogger.DisableLog('rdApp.*')
 
+        r_atoms = r"Cl|Br|Si|Se|Na|Ca|Li|Mg|Zn|Fe|Cu|Mn|Hg|Sn|As|Bi|Cd|se|Cr|Sb"
+
         self.regex_patterns = {
-            'smiles': re.compile(r"(\[|]|Cl|Br|Si|Se|Na|Ca|Li|Mg|Zn|Fe|Cu|Mn|Hg|Sn|[A-Z]|[a-z]|[=#/\\().+\-:]|\d)"),
-            'deepsmiles': re.compile(r"(\[|]|Br|Cl|Si|Se|Na|Ca|Li|Mg|Zn|Fe|Cu|Mn|Hg|Sn|[A-Z]|[a-z]|[=#/\\().+\-:]|\)+|\(+|\d)"),
+            'smiles': re.compile(rf"(\[|]|{r_atoms}|[A-Z]|[a-z]|[=#/\\().+\-:]|\d)"),
+            'deepsmiles': re.compile(rf"(\[|]|{r_atoms}|[A-Z]|[a-z]|[=#/\\().+\-:]|\)+|\(+|\d)"),
             'selfies': re.compile(r"\[.*?]")
         }
         self.char2idx = {char: idx for idx, char in enumerate(self.alphabet)} if self.alphabet is not None else None
@@ -211,6 +213,8 @@ class StringVectorizer:
             return self.ds_converter.encode(smiles)
         elif self.alphabet_type == 'selfies':
             return sf.encoder(smiles)
+        else:
+            raise ValueError(f"Unsupported alphabet type: {self.alphabet_type}")
 
     def split(self, string):
         split_string = self.regex_patterns[self.alphabet_type].findall(string)

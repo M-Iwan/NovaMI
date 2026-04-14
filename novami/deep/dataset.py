@@ -1,247 +1,194 @@
-"""
-TODO: Force BF16 precision
-"""
-
-from functools import partial
-from typing import Union, List
-from collections import defaultdict
-
-
-import numpy as np
 import torch
-from torch import Tensor
-from torch.utils.data import Dataset as TorchDataset, DataLoader
-import torch_geometric
-from torch_geometric.data import Dataset as GeometricDataset
-from torch_geometric.data import Batch
+from torch.utils.data import Dataset
+import polars as pl
+from typing import Dict, Any, List, Optional, Union
 
 
-class StringDataset(TorchDataset):
-    def __init__(self, strings: List[str], labels: Union[List, Tensor], lengths: Union[List[int], Tensor]):
+class MMDataset(Dataset):
+    """
+    Multi-Modal Dataset that handles strings, graphs, descriptors, images, etc.
+    
+    Parameters
+    ----------
+    df: pl.DataFrame
+        A Polars DataFrame containing at least one feature type and target values.
+    config: dict    
+        A dictionary mapping column names to supported modality types:
+            - 'string': Tuple[torch.Tensor (tokens), int (length)] from StringVectorizer
+            - 'graph': torch_geometric.Data from GraphVectorizer
+            - 'descriptor': 1D torch.Tensor [desc_size]
+            - 'image': 2D/3D torch.Tensor
+            - 'target': 1D torch.Tensor of shape [num_task]
+            - 'sample_weight': 1D torch.Tensor; same shape as 'target'
+            - 'group': Any type for grouping
+    """
+
+    SUPPORTED_MODALITIES = {
+        'string', 'graph', 'descriptor', 'image', 'target', 'sample_weight', 'group'
+    }
+
+    def __init__(self, df: pl.DataFrame, config: Dict[str, str]):
+        self.df = df
+        self.config = {}
+
+        self._validate_config()
+
+        self.feature_columns = []
+        self.target_column = None
+        self.weight_column = None
+        self.group_column = None
+
+        for col_name, modality in config.items():
+            if modality in {'string', 'graph', 'descriptor', 'image'}:
+                self.feature_columns.append(col_name)
+                self.config[col_name] = modality
+            elif modality == 'target':
+                self.target_column = col_name
+                self.config['y_true'] = modality
+                self.df = self.df.rename({col_name: 'y_true'})
+            elif modality == 'sample_weight':
+                self.weight_column = col_name
+                self.config['y_wgts'] = modality
+                self.df = self.df.rename({col_name: 'y_wgts'})
+            elif modality == 'group':
+                self.group_column = col_name
+                self.config['group'] = modality
+
+        # Validate minimum requirements
+        if not self.feature_columns:
+            raise ValueError("At least one feature modality is required")
+        if not self.target_column:
+            raise ValueError("At least one target is required")
+
+        # Validate all columns exist in DataFrame
+        missing_cols = set(config.keys()) - set(df.columns)
+        if missing_cols:
+            raise ValueError(f"Columns not found in DataFrame: {missing_cols}")
+
+    def _validate_config(self):
+        """Validate the configuration dictionary"""
+        
+        unsupported = set(self.config.values()) - self.SUPPORTED_MODALITIES
+        if unsupported:
+            raise ValueError(f"Unsupported modalities: {unsupported}")
+
+        modality_counts = {}
+        for modality in self.config.values():
+            modality_counts[modality] = modality_counts.get(modality, 0) + 1
+
+        # Multiple instances allowed for these modalities
+        multi_allowed = {'descriptor', 'string', 'graph', 'image'}
+        for modality, count in modality_counts.items():
+            if count > 1 and modality not in multi_allowed:
+                raise ValueError(f"Modality '{modality}' can only be assigned to one column")
+
+    def __len__(self) -> int:
+        return len(self.df)
+
+    def __getitem__(self, idx: int) -> Dict[str, Any]:
         """
-        TODO: update docstring, add collate_fn to calculate lengths; move RecurrentVectorizer from model to here
-        TODO: include string processing within __getitem__ method
+        Get a single sample from the dataset.
         """
-        super(StringDataset).__init__()
-        self.strings = strings
-        self.labels = labels
-        self.lengths = lengths
+        row = self.df.row(idx, named=True)
+        sample = {}
 
-    def __len__(self):
-        """
-        Returns the length of the dataset.
+        for col_name, modality in self.config.items():
+            data = row[col_name]
 
-        Returns
-        -------
-        int
-            Length of the dataset.
-        """
-        return len(self.strings)
+            if modality == 'string':
+                sample[col_name] = data
+            if modality == 'target':
+                sample['y_true'] = data
+            elif modality in {'graph', 'descriptor', 'image'}:
+                sample[col_name] = data
+            elif modality == 'sample_weight':
+                sample['y_wgts'] = data
+            elif modality == 'group':
+                sample['group'] = data
 
-    def __getitem__(self, idx):
-        """
-        Retrieves the item at the given index.
+        return sample
 
-        Parameters
-        ----------
-        idx : int
-            Index of the item to retrieve.
+    def get_feature_columns(self) -> List[str]:
+        """Get list of feature column names"""
+        return self.feature_columns.copy()
 
-        Returns
-        -------
-        tuple
-            A tuple containing the vectorized SMILES string and its corresponding label.
-        """
+    def get_target_column(self) -> str:
+        """Get target column name"""
+        return self.target_column
 
-        string = self.strings[idx]
-        label = self.labels[idx]
-        length = self.lengths[idx]
+    def get_modality_info(self) -> Dict[str, List[str]]:
+        """Get columns organized by modality type"""
+        modality_info = {}
+        for col_name, modality in self.config.items():
+            if modality not in modality_info:
+                modality_info[modality] = []
+            modality_info[modality].append(col_name)
+        return modality_info
 
-        return string, label, length
+    def has_sample_weights(self) -> bool:
+        """Check if dataset has sample weights"""
+        return self.weight_column is not None
+
+    def has_groups(self) -> bool:
+        """Check if dataset has group information"""
+        return self.group_column is not None
 
 
-class GraphDataset(GeometricDataset):
-    def __init__(self, data: List[torch_geometric.data.Data]):
-        """
-        Raw version, but working
-        """
-        super(GraphDataset).__init__()
+class MMBatch:
+    """
+    Multi-modal batch container with dictionary-like access and automatic device transfer.
+    """
+    
+    def __init__(self, data: Dict[str, Any], config: Dict[str, str]):
         self.data = data
-
-    def __len__(self):
+        self.config = config
+    
+    def __getitem__(self, key: str):
+        return self.data[key]
+    
+    def __contains__(self, key: str):
+        return key in self.data
+    
+    def get(self, key: str, default=None):
+        return self.data.get(key, default)
+    
+    def keys(self):
+        return self.data.keys()
+    
+    def values(self):
+        return self.data.values()
+    
+    def items(self):
+        return self.data.items()
+    
+    def get_modality(self, key: str) -> Optional[str]:
+        """Get the modality type for a given key"""
+        return self.config.get(key)
+    
+    def get_by_modality(self, modality: str) -> Dict[str, Any]:
+        """Get all data of a specific modality type"""
+        return {key: self.data[key] for key, mod in self.config.items() 
+                if mod == modality and key in self.data}
+    
+    def to(self, device: Union[str, torch.device], non_blocking: bool = False):
         """
-        Returns the length of the dataset.
-
-        Returns
-        -------
-        int
-            Length of the dataset.
+        Move all tensors in the batch to the specified device
         """
-        return len(self.data)
-
-    def __getitem__(self, idx):
-        """
-        Retrieves the item at the given index.
-
-        Parameters
-        ----------
-        idx : int
-            Index of the item to retrieve.
-
-        """
-        return self.data[idx]
-
-
-class NumpyDataset(TorchDataset):
-    def __init__(self, x: np.ndarray, y: np.ndarray):
-        """
-        TODO: update docstring
-        Dataset class for handling numpy input data.
-        """
-
-        super(NumpyDataset).__init__()
-        self.x = x
-        self.y = y
-
-    def __len__(self):
-        """
-        Returns the length of the dataset.
-
-        Returns
-        -------
-        int
-            Length of the dataset.
-        """
-        return self.x.shape[0]
-
-    def __getitem__(self, idx):
-        """
-        Retrieves the item at the given index as a torch tensor.
-        """
-
-        x_tens = torch.FloatTensor(self.x[idx, :])
-        y_tens = torch.FloatTensor(self.y[idx, :])
-
-        return x_tens, y_tens
-
-class AttrDict(dict):
-    def __getattr__(self, name):
-        try:
-            return self[name]
-        except KeyError:
-            raise AttributeError(f"'AttrDict' object has no attribute '{name}'")
-
-    def __setattr__(self, name, value):
-        self[name] = value
-
-
-class DeepDataset(TorchDataset):
-    def __init__(self, dataframe, descriptor_cols: Union[List[str], str], label_col: str, weight_col: str = None,
-                 signature_col: str = None, ttype: torch.DataType = torch.bfloat16):
-        """
-        descriptors: List[Dict[str, Any]]
-        labels: np.ndarray or torch.Tensor
-        sample_weights: np.ndarray or torch.Tensor
-        """
-
-        if isinstance(descriptor_cols, str):
-            descriptor_cols = [descriptor_cols]
-
-        for col in descriptor_cols:
-            value = dataframe[col].iloc[0]
-            if isinstance(value, np.ndarray):
-                dataframe[col] = dataframe[col].apply(lambda array: torch.from_numpy(array).to(ttype).reshape(-1))
-
-        self.descriptors = dataframe[descriptor_cols].to_dict(orient='records')  # List[dict]
-        label_array = np.vstack(dataframe[label_col].to_numpy())
-
-        self.labels = torch.from_numpy(label_array).to(ttype)
-
-        if weight_col is not None:
-            weights_array = np.vstack(dataframe[weight_col].to_numpy())
-            self.weights = torch.from_numpy(weights_array).to(ttype)
-        else:
-            self.weights = torch.ones_like(self.labels).to(ttype)
-
-        if signature_col is not None:
-            self.signatures = dataframe[signature_col].tolist()
-        else:
-            self.signatures = [None] * len(dataframe)
-
-    def __len__(self):
-        return len(self.labels)
-
-    def __getitem__(self, idx):
-        sample = self.descriptors[idx].copy()
-        sample['Label'] = self.labels[idx, :]
-        sample['Weight'] = self.weights[idx, :]
-        sample['Signature'] = self.signatures[idx]
-        return AttrDict(sample)
-
-
-def deep_collate(batch, sign_names: List[str]):
-    collated = AttrDict({
-        'Graph': [],
-        'String_tokens': [],
-        'String_lengths': [],
-        'Label': [],
-        'Weight': [],
-        'Signature': defaultdict(list)
-    })
-
-    present_keys = batch[0].keys()
-    other_fields = defaultdict(list)
-
-    for sample in batch:
-        if 'Graph' in present_keys:
-            collated['Graph'].append(sample['Graph'])
-
-        if 'String' in present_keys:
-            string_tensor, token_len = sample['String']  # already tensor and int
-            collated['String_tokens'].append(string_tensor)
-            collated['String_lengths'].append(token_len)
-
-        collated['Label'].append(sample['Label'])
-        collated['Weight'].append(sample['Weight'])
-
-        for sign, name in zip(sample['Signature'], sign_names):
-            collated.Signature[name].append(sign)
-
-        for key, value in sample.items():
-            if key not in ['Graph', 'String', 'Label', 'Weight', 'Signature']:
-                other_fields[key].append(value)
-
-    if 'Graph' in present_keys:
-        collated['Graph'] = Batch.from_data_list(collated['Graph'])
-
-    if 'String' in present_keys:
-        string_tensor = torch.stack(collated['String_tokens'])  # (B, max_seq_len)
-        string_lengths = torch.tensor(collated['String_lengths'])  # (B,)
-        collated['String'] = (string_tensor, string_lengths)
-
-    del collated['String_tokens']
-    del collated['String_lengths']
-
-    collated['Label'] = torch.stack(collated['Label'])
-    collated['Weight'] = torch.stack(collated['Weight'])
-
-    for key, values in other_fields.items():
-        collated[key] = torch.stack(values)
-
-    return collated
-
-
-class DeepLoader(DataLoader):
-    def __init__(self, dataframe, descriptor_cols: Union[List[str], str], label_col: str,
-                 weight_col: str = None, signature_col: str = None, signature_names: List[str] = None,
-                 batch_size: int = 64, shuffle: bool = True, **kwargs):
-        dataset = DeepDataset(
-            dataframe=dataframe,
-            descriptor_cols=descriptor_cols,
-            label_col=label_col,
-            weight_col=weight_col,
-            signature_col=signature_col,
-        )
-
-        super().__init__(dataset, batch_size=batch_size, shuffle=shuffle,
-                         collate_fn=partial(deep_collate, sign_names=signature_names), **kwargs)
+        new_data = {}
+        for key, value in self.data.items():
+            if isinstance(value, torch.Tensor):
+                new_data[key] = value.to(device, non_blocking=non_blocking)
+            elif isinstance(value, tuple) and len(value) == 3:
+                new_data[key] = tuple(
+                    item.to(device, non_blocking=non_blocking) 
+                    if isinstance(item, torch.Tensor) else item 
+                    for item in value
+                )
+            elif hasattr(value, 'to'):  # torch_geometric.Data objects
+                new_data[key] = value.to(device)
+            else:
+                new_data[key] = value
+        return MMBatch(new_data, self.config)
+    
+    def __repr__(self):
+        return f"MMBatch({list(self.data.keys())})"
