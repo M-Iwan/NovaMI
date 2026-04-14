@@ -31,12 +31,6 @@ class DataTransformer:
         Whether to remove features with near-zero variance.
     use_scaler: bool, default=True
         Whether to scale features using RobustScaler.
-
-    Notes
-    -----
-    TODO: Change the behaviour of missing/imputer to only remove features above some missingness threshold
-    TODO: Integrate with deep module
-    TODO: Update code in other modules for clipping (ah, breaking signatures again)
     """
 
     def __init__(self, use_masks: bool = True, use_corr: bool = False, use_imputer: bool = True,
