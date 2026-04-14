@@ -1,12 +1,5 @@
 """
-Deep learning units and training base classes.
-
-The supported entry points are :class:`MMTUnit` (training/eval API), concrete
-models such as :class:`TestModel`, and the data pipeline
-:class:`novami.deep.dataset.MMDataset` / :class:`novami.deep.loader.MMLoader`.
-
-Legacy :class:`GNNRegressor` is re-exported via ``__getattr__`` with a
-deprecation warning; implementation lives in ``deprecated.deep.gnn_regressor``.
+To be written
 """
 
 import os
@@ -14,7 +7,7 @@ import inspect
 from copy import deepcopy
 from functools import reduce
 from collections import defaultdict
-from typing import List, Iterable, Union
+from typing import Any, Dict, List, Iterable, Optional, Union
 from abc import ABC, abstractmethod
 
 import numpy as np
@@ -31,19 +24,13 @@ class MMTUnit(ABC, nn.Module):
     """
     Abstract base for multi-task PyTorch models with masked weighted loss.
 
-    Subclasses implement :meth:`forward` and static :meth:`score`. Training
-    helpers (:meth:`fit_epoch`, :meth:`fit`, etc.) assume batches provide
-    ``y_true`` and ``y_wgts`` tensors (see :class:`novami.deep.loader.MMLoader`).
+    Supports multimodal inputs, multitask predictions, and training using sparse
+    matrices.
 
-    Parameters
-    ----------
-    device : str, optional
-        Default device for training loops that move tensors. Default ``'cpu'``.
-    num_task : int, optional
-        Number of tasks (output dimension for regression heads). Default is 1.
-    model_name : str, optional
-        Logical name; stored as :attr:`name` and :attr:`model_name` for logging
-        and checkpoint filenames.
+    If batches include ``group`` (from :class:`novami.deep.loader.MMLoader`), each
+    row may carry multiple string tags (e.g. ``numpy.array(['Small', 'Acid'])``).
+    :meth:`mw_loss` then adds a ``'Group'`` entry: per-tag weighted partial loss,
+    aggregated across epochs via :meth:`combine_mw_loss` and :meth:`normalize_mw_loss`.
     """
     def __init__(self, device: str = 'cpu', num_task: int = 1, model_name: str = 'Unit'):
         super(MMTUnit, self).__init__()
@@ -102,10 +89,15 @@ class MMTUnit(ABC, nn.Module):
             epoch_data['y_true'].append(y_true)
             epoch_data['y_wgts'].append(y_wgts)
 
+            group = batch.get('group') if hasattr(batch, 'get') else None
+            if group is None and isinstance(batch, dict):
+                group = batch.get('group')
+
             batch_loss = self.mw_loss(
                 y_pred=y_pred,
                 y_true=y_true,
-                y_wgts=y_wgts
+                y_wgts=y_wgts,
+                group=group,
             )
 
             loss, loss_wgt = batch_loss.get('Total')
@@ -149,10 +141,15 @@ class MMTUnit(ABC, nn.Module):
                 epoch_data['y_true'].append(y_true)
                 epoch_data['y_wgts'].append(y_wgts)
 
+                group = batch.get('group') if hasattr(batch, 'get') else None
+                if group is None and isinstance(batch, dict):
+                    group = batch.get('group')
+
                 batch_loss = self.mw_loss(
                     y_pred=y_pred,
                     y_true=y_true,
-                    y_wgts=y_wgts
+                    y_wgts=y_wgts,
+                    group=group,
                 )
 
                 epoch_losses.append(batch_loss)
@@ -265,21 +262,31 @@ class MMTUnit(ABC, nn.Module):
 
         return torch.cat(predictions, dim=0).detach().cpu().numpy()
 
-    def mw_loss(self, y_pred, y_true, y_wgts):
+    def mw_loss(self, y_pred, y_true, y_wgts, group: Optional[List[Any]] = None):
         """
         Per-element loss weighted by ``y_wgts`` with NaN masking on ``y_true``.
+
+        When ``group`` is provided (length ``B`` matching the batch), each entry
+        should be an iterable of string labels (e.g. ``numpy.array(['Small', 'Acid'])``).
+        Partial weighted sums are computed for every unique label appearing in the
+        batch (rows containing that label contribute). Keys are stored under
+        ``batch_loss['Group']`` as ``label -> (loss_sum, weight_sum)`` for
+        :meth:`combine_mw_loss` / :meth:`normalize_mw_loss`.
 
         Parameters
         ----------
         y_pred : torch.Tensor
         y_true : torch.Tensor
         y_wgts : torch.Tensor
+        group : list, optional
+            Per-row group tag iterables (length ``B``).
 
         Returns
         -------
         dict
             ``'Total'`` and ``'Task'`` entries, each ``(value, weight)`` tensors
-            for aggregation with :meth:`combine_mw_loss`.
+            for aggregation with :meth:`combine_mw_loss`. Optional ``'Group'``
+            mapping string labels to ``(value, weight)`` tensors.
         """
 
         mask = ~torch.isnan(y_true)
@@ -296,10 +303,48 @@ class MMTUnit(ABC, nn.Module):
         per_task_loss = mw_loss.sum(dim=0)
         per_task_loss_wgt = (y_wgts * mask).sum(dim=0)
 
-        batch_loss = {
+        batch_loss: Dict[str, Any] = {
             'Total': (total_loss, total_loss_wgt),
-            'Task': (per_task_loss, per_task_loss_wgt)
+            'Task': (per_task_loss, per_task_loss_wgt),
         }
+
+        if group is not None and len(group) == y_pred.shape[0]:
+            unique_labels = set()
+            for row in group:
+                arr = np.asarray(row, dtype=object).ravel()
+                for x in arr:
+                    if x is None:
+                        continue
+                    s = str(x).strip()
+                    if not s or s.lower() == 'nan':
+                        continue
+                    unique_labels.add(s)
+
+            if unique_labels:
+                device = y_pred.device
+                dtype = mw_loss.dtype
+                b = y_pred.shape[0]
+                row_axes = (1,) * max(0, mw_loss.ndim - 1)
+                group_losses: Dict[str, tuple] = {}
+                for label in unique_labels:
+                    row_mask = np.zeros(b, dtype=np.float64)
+                    for i, row_g in enumerate(group):
+                        arr = np.asarray(row_g, dtype=object).ravel()
+                        tags = {
+                            str(x).strip()
+                            for x in arr
+                            if x is not None and str(x).strip() and str(x).strip().lower() != 'nan'
+                        }
+                        if label in tags:
+                            row_mask[i] = 1.0
+                    rm = torch.as_tensor(row_mask, device=device, dtype=dtype).view(b, *row_axes)
+                    partial = mw_loss * rm
+                    gl = partial.sum()
+                    gw = (m_wgts * rm).sum()
+                    if float(gw.detach().cpu().item()) > 0.0:
+                        group_losses[label] = (gl, gw)
+                if group_losses:
+                    batch_loss['Group'] = group_losses
 
         return batch_loss
 
@@ -311,10 +356,30 @@ class MMTUnit(ABC, nn.Module):
         per_task_loss = loss_1['Task'][0] + loss_2['Task'][0]
         per_task_wgt = loss_1['Task'][1] + loss_2['Task'][1]
 
-        return {
+        out: Dict[str, Any] = {
             'Total': (total_loss, total_wgt),
-            'Task': (per_task_loss, per_task_wgt)
+            'Task': (per_task_loss, per_task_wgt),
         }
+
+        g1: Dict[str, tuple] = loss_1.get('Group') or {}
+        g2: Dict[str, tuple] = loss_2.get('Group') or {}
+        if g1 or g2:
+            dev = total_loss.device
+            dt = total_loss.dtype
+            merged: Dict[str, tuple] = {}
+            for key in set(g1) | set(g2):
+                l_sum = torch.zeros((), device=dev, dtype=dt)
+                w_sum = torch.zeros((), device=dev, dtype=dt)
+                if key in g1:
+                    l_sum = l_sum + g1[key][0]
+                    w_sum = w_sum + g1[key][1]
+                if key in g2:
+                    l_sum = l_sum + g2[key][0]
+                    w_sum = w_sum + g2[key][1]
+                merged[key] = (l_sum, w_sum)
+            out['Group'] = merged
+
+        return out
 
     @staticmethod
     def normalize_mw_loss(mw_loss):
@@ -323,10 +388,22 @@ class MMTUnit(ABC, nn.Module):
         per_task_loss = mw_loss['Task'][0] / mw_loss['Task'][1]
         per_task_loss = np.round(per_task_loss.detach().cpu().numpy(), 5)
 
-        return {
+        out: Dict[str, Any] = {
             'Total': per_sample_loss,
             'Task': per_task_loss,
         }
+
+        grp = mw_loss.get('Group')
+        if grp:
+            out['Group'] = {}
+            for label, (lv, wv) in grp.items():
+                w = float(wv.detach().cpu().item())
+                if w <= 0.0:
+                    out['Group'][label] = np.float64(0.0)
+                else:
+                    out['Group'][label] = np.round((lv / wv).detach().cpu().numpy(), 5)
+
+        return out
 
     def mw_metrics(self, y_true, y_pred, y_wgts):
         """

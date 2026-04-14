@@ -23,7 +23,8 @@ class MMDataset(Dataset):
             - 'image': 2D/3D torch.Tensor
             - 'target': 1D torch.Tensor of shape [num_task]
             - 'sample_weight': 1D torch.Tensor; same shape as 'target'
-            - 'group': Any type for grouping
+            - 'group': String labels per row (e.g. ``numpy.array(['Small', 'Acid'])``).
+              The source column is renamed to ``group`` in the dataframe; batch key is ``'group'``.
     """
 
     SUPPORTED_MODALITIES = {
@@ -74,6 +75,7 @@ class MMDataset(Dataset):
                 self.df = self.df.rename({col_name: 'y_wgts'})
             elif modality == 'group':
                 self.group_column = col_name
+                self.df = self.df.rename({col_name: 'group'})
                 self.config['group'] = modality
 
         self._validate_config()
@@ -125,6 +127,10 @@ class MMDataset(Dataset):
         """Original target column name before rename to ``y_true``."""
         return self.target_column
 
+    def get_group_column(self) -> Optional[str]:
+        """Original group column name before rename to ``group``."""
+        return self.group_column
+
     def get_modality_info(self) -> Dict[str, List[str]]:
         """Map modality strings to lists of column / batch keys."""
         modality_info: Dict[str, List[str]] = {}
@@ -150,8 +156,7 @@ class MMBatch:
     data : dict
         Batched tensors and other values.
     config : dict
-        Same modality mapping as the source :class:`MMDataset` (keys may include
-        ``'y_true'``, ``'y_wgts'``).
+        Same modality mapping as the source :class:`MMDataset` 
     """
 
     def __init__(self, data: Dict[str, Any], config: Dict[str, str]):
