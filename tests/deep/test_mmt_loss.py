@@ -47,7 +47,7 @@ def test_mw_loss_total_matches_masked_weighted_sum(probe: _LossProbe):
     y_true = torch.tensor([[0.0, float("nan")], [float("nan"), 3.0]], dtype=torch.float32)
     y_wgts = torch.tensor([[1.0, 2.0], [0.5, 1.0]], dtype=torch.float32)
     ref = _reference_mw_loss(probe.loss_fn, y_pred, y_true, y_wgts)
-    out = probe.mw_loss(y_pred, y_true, y_wgts)
+    out = probe.loss(y_pred, y_true, y_wgts)
     tl, tw = out["Total"]
     assert torch.allclose(tl, ref.sum())
     assert torch.allclose(tw, (y_wgts * (~torch.isnan(y_true))).sum())
@@ -61,7 +61,7 @@ def test_mw_loss_per_task_matches_column_sums(probe: _LossProbe):
     y_true[2, 0] = float("nan")
     y_wgts = torch.ones_like(y_pred)
     ref = _reference_mw_loss(probe.loss_fn, y_pred, y_true, y_wgts)
-    out = probe.mw_loss(y_pred, y_true, y_wgts)
+    out = probe.loss(y_pred, y_true, y_wgts)
     pt, ptw = out["Task"]
     assert torch.allclose(pt, ref.sum(dim=0))
     assert torch.allclose(ptw, (y_wgts * (~torch.isnan(y_true))).sum(dim=0))
@@ -74,7 +74,7 @@ def test_mw_loss_group_partial_sums(probe: _LossProbe):
     y_wgts = torch.tensor([[1.0, 1.0], [2.0, 1.0], [1.0, 0.0]], dtype=torch.float32)
     group = [np.array(["A", "B"]), ["A"], np.array(["B"])]
     ref = _reference_mw_loss(probe.loss_fn, y_pred, y_true, y_wgts)
-    out = probe.mw_loss(y_pred, y_true, y_wgts, group=group)
+    out = probe.loss(y_pred, y_true, y_wgts, group=group)
     assert "Group" in out
     for label in ("A", "B"):
         gl, gw = out["Group"][label]
@@ -101,11 +101,11 @@ def test_combine_mw_loss_merges_group_keys(probe: _LossProbe):
     """H4: ``combine_mw_loss`` unions group labels and sums (loss, weight) pairs."""
     y = torch.zeros(1, 1)
     w = torch.ones_like(y)
-    a = probe.mw_loss(y, y, w, group=[["x"]])
-    b = probe.mw_loss(y + 1.0, y, w, group=[["y"]])
-    c = MMTUnit.combine_mw_loss(a, b)
+    a = probe.loss(y, y, w, group=[["x"]])
+    b = probe.loss(y + 1.0, y, w, group=[["y"]])
+    c = MMTUnit.combine_loss(a, b)
     assert set(c["Group"].keys()) == {"x", "y"}
-    d = MMTUnit.combine_mw_loss(b, a)
+    d = MMTUnit.combine_loss(b, a)
     assert set(d["Group"].keys()) == {"x", "y"}
 
 
@@ -114,11 +114,11 @@ def test_normalize_mw_loss_division(probe: _LossProbe):
     y_pred = torch.tensor([[0.0, 1.0]], dtype=torch.float32)
     y_true = torch.tensor([[0.0, float("nan")]], dtype=torch.float32)
     y_wgts = torch.tensor([[1.0, 1.0]], dtype=torch.float32)
-    batch = probe.mw_loss(y_pred, y_true, y_wgts, group=[["z"]])
+    batch = probe.loss(y_pred, y_true, y_wgts, group=[["z"]])
     z_l, z_w = batch["Group"]["z"]
     # Force a zero-weight group entry by hand (simulates merged epoch edge case)
     batch["Group"]["empty"] = (torch.tensor(0.0), torch.tensor(0.0))
-    norm = MMTUnit.normalize_mw_loss(batch)
+    norm = MMTUnit.normalize_loss(batch)
     tl, tw = batch["Total"]
     assert np.isclose(norm["Total"], float((tl / tw).cpu().numpy()))
     task_num = (batch["Task"][0] / batch["Task"][1]).detach().cpu().numpy()
@@ -131,7 +131,7 @@ def test_group_skipped_when_batch_length_mismatch(probe: _LossProbe):
     y_pred = torch.zeros(3, 1)
     y_true = torch.zeros_like(y_pred)
     y_wgts = torch.ones_like(y_pred)
-    out = probe.mw_loss(y_pred, y_true, y_wgts, group=[["a"], ["b"]])
+    out = probe.loss(y_pred, y_true, y_wgts, group=[["a"], ["b"]])
     assert "Group" not in out
 
 
@@ -142,13 +142,13 @@ def test_reduce_combine_matches_single_concat(probe: _LossProbe):
         yt = yp.clone()
         yt[0, 0] = float("nan") if t == 1 else yt[0, 0]
         yw = torch.ones_like(yp)
-        batches.append(probe.mw_loss(yp, yt, yw))
-    merged = reduce(MMTUnit.combine_mw_loss, batches)
+        batches.append(probe.loss(yp, yt, yw))
+    merged = reduce(MMTUnit.combine_loss, batches)
     cat_pred = torch.cat([torch.full((2, 2), float(t), dtype=torch.float32) for t in range(3)], dim=0)
     cat_true = cat_pred.clone()
     cat_true[2, 0] = float("nan")
     cat_w = torch.ones_like(cat_pred)
-    direct = probe.mw_loss(cat_pred, cat_true, cat_w)
+    direct = probe.loss(cat_pred, cat_true, cat_w)
     assert torch.allclose(merged["Total"][0], direct["Total"][0])
     assert torch.allclose(merged["Total"][1], direct["Total"][1])
     assert torch.allclose(merged["Task"][0], direct["Task"][0])
@@ -161,7 +161,7 @@ def test_bce_logits_binary_multitask(probe: _LossProbe):
     y_true = torch.tensor([[0.0, 1.0], [1.0, float("nan")]], dtype=torch.float32)
     y_wgts = torch.tensor([[1.0, 0.5], [1.0, 1.0]], dtype=torch.float32)
     ref = _reference_mw_loss(probe.loss_fn, y_pred, y_true, y_wgts)
-    out = probe.mw_loss(y_pred, y_true, y_wgts)
+    out = probe.loss(y_pred, y_true, y_wgts)
     assert torch.allclose(out["Total"][0], ref.sum())
 
 
@@ -171,7 +171,7 @@ def test_group_masks_on_device(probe: _LossProbe, device: str):
     y_pred = torch.tensor([[0.0], [1.0]], device=device)
     y_true = y_pred.clone()
     y_wgts = torch.ones_like(y_pred)
-    out = probe.mw_loss(y_pred, y_true, y_wgts, group=[["g"], ["g"]])
+    out = probe.loss(y_pred, y_true, y_wgts, group=[["g"], ["g"]])
     gl, gw = out["Group"]["g"]
     assert gl.device.type == device
     assert gw.device.type == device

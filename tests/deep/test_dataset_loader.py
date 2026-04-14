@@ -227,9 +227,9 @@ def test_mmtunit_mw_loss_partial_per_group():
     y_true = torch.tensor([[1.0], [0.0]], dtype=torch.float32)
     y_wgts = torch.ones_like(y_true)
     group = [np.array(["A"], dtype=object), np.array(["A", "B"], dtype=object)]
-    out = m.mw_loss(y_pred, y_true, y_wgts, group=group)
+    out = m.loss(y_pred, y_true, y_wgts, group=group)
     assert "Group" in out
     assert set(out["Group"].keys()) == {"A", "B"}
-    norm = MMTUnit.normalize_mw_loss(out)
+    norm = MMTUnit.normalize_loss(out)
     np.testing.assert_allclose(float(norm["Group"]["A"]), 2.0, rtol=1e-5)
     np.testing.assert_allclose(float(norm["Group"]["B"]), 4.0, rtol=1e-5)
