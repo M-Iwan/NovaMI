@@ -8,11 +8,11 @@ Primarily for personal use: function signatures and repository structure may cha
 For convenience, .py files that work and are up-to-date are marked with *, while those unlikely to work (and should be removed) with #. If no symbol is given, the code should work, but won't be compatibile with the rest of the repository.
 
 ### Repository Structure
-Last updated on version: 0.3.3
+Last updated on version: 0.3.5
 
 ```
 novami/
-├── deprecated/   Old code kept because it might be useful one day
+├── deprecated/   Old code kept because it might be useful one day (incl. MMMTGNN in deep/mmmtgnn.py)
 ├── environments/   Environments for special-need code (CDDD, Mordred) 
 ├── novami/
 │   ├── api/
@@ -36,12 +36,13 @@ novami/
 │   │   ├── partition.py*   Partitioning algoriths; convenience wrappers around scikit-learn and cluster.py
 │   │   ├── similarity.py*   Parallel distance matrix / k-neighbors calculations
 │   │   └── transform.py*   Main class for normalizing/processing data before training
-│   ├── deep/  When I was writing this code, me and God knew how it worked, guess who doesn't anymore?
-│   │   ├── dataset.py   String, Graph, and Tensor-based datasets
-│   │   ├── model.py   DL models and their individual modules (see MMMTGNN - Multi Modal, Multi Task General Neural Network)
-│   │   ├── models.py   Placeholder for cleaned models
-│   │   ├── utils.py   Helper functions
-│   │   └── vectorizer.py   Graph and String (SMILES, SELFIES, DeepSMILES) vectorizers 
+│   ├── deep/  PyTorch stack: MMTUnit + MMDataset + MMLoader (legacy MMMTGNN under deprecated/deep/)
+│   │   ├── dataset.py*   MMDataset / MMBatch for multi-modal Polars-backed samples
+│   │   ├── loader.py*   MMLoader (collate → MMBatch)
+│   │   ├── models.py*   MMTUnit base class and concrete units (e.g. TestModel)
+│   │   ├── modules.py*   GNN/CNN/RNN/linear builders used by units
+│   │   ├── utils.py*   Activations and small helpers
+│   │   └── vectorizer.py*   GraphVectorizer, StringVectorizer (legacy MMGV → deprecated.deep.mmgv)
 │   ├── io/
 │   │   ├── database.py*   Preprocessing of ChEMBL and BindingDB files
 │   │   └── file.py*   IO functions for several formats I'm using; works with Pandas/Polars DFs
