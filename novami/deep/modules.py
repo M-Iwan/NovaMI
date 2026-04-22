@@ -1,15 +1,28 @@
+"""
+Reusable graph, convolution-on-sequence, RNN, and MLP blocks for novami.deep models.
+"""
 import inspect
 from typing import List
 
 import torch
 from torch import nn
+from torch_geometric.nn import GCNConv, SAGEConv, GINConv, GATConv, GATv2Conv, EdgeConv
 
 from novami.deep.utils import get_activation_fn
 
 
 class GNNModule(nn.Module):
     """
+    One graph conv step: convolution, optional batch norm, activation, dropout.
 
+    Parameters
+    ----------
+    graph_layer : nn.Module
+        Typically a PyTorch Geometric conv layer.
+    batch_norm : nn.Module or None
+        BatchNorm1d on node features, or None.
+    activation : nn.Module or None
+    dropout : nn.Module or None
     """
     def __init__(self, graph_layer, batch_norm, activation, dropout):
         super().__init__()
@@ -19,7 +32,11 @@ class GNNModule(nn.Module):
         self.dropout = dropout
         self.accepts_edge_attr = 'edge_attr' in inspect.signature(self.graph_layer.forward).parameters
 
-    def forward(self, x, edge_index, edge_attr=None):
+    def forward(self, graph_batch):
+
+        x = graph_batch.x
+        edge_index = graph_batch.edge_index
+        edge_attr = getattr(graph_batch, 'edge_attr', None)
 
         if self.accepts_edge_attr and edge_attr is not None:
             x = self.graph_layer(x, edge_index, edge_attr)
@@ -37,6 +54,24 @@ class GNNModule(nn.Module):
 
 
 def build_graph_layers(gnn_params):
+    """
+    Build a nn.ModuleList of GNNModule layers from a single parameter dict.
+
+    Parameters
+    ----------
+    gnn_params : dict
+        Required keys: layer (class), layer_type (convolutional, attention, edge),
+        sizes (list of int output dims per layer), input_dim (int).
+        Typical optional keys: args (list of dicts per layer), activation, dropout,
+        batch_norm, heads (for attention).
+
+    Returns
+    -------
+    layers : nn.ModuleList
+        Ordered GNN blocks.
+    out_dim : int
+        Node feature width after the last layer.
+    """
     layer_class = gnn_params['layer']
     layer_type = gnn_params.get('layer_type')  # default
     sizes = gnn_params['sizes']
@@ -59,7 +94,7 @@ def build_graph_layers(gnn_params):
             next_in = out_dim
             graph_layer = layer_class(in_dim, out_dim, **args)
         elif layer_type == 'edge':
-            nn_layer = nn.Linear(in_dim, out_dim)
+            nn_layer = nn.Linear(in_dim * 2, out_dim)
             next_in = out_dim
             graph_layer = layer_class(nn_layer, **args)
         else:
@@ -82,9 +117,122 @@ def build_graph_layers(gnn_params):
     return nn.ModuleList(gnn_blocks), in_dim
 
 
+def build_gnn_config():
+    def suggest_gnn_layers():
+        return {
+            'convolutional': [GCNConv, SAGEConv, GINConv],
+            'attention': [GATConv, GATv2Conv],
+            'edge': [EdgeConv]
+        }
+
+    print("=== GNN Layer Configuration ===")
+    layer_types = ['convolutional', 'attention', 'edge']
+
+    while True:
+        print(f"Available layer types: {layer_types}")
+        layer_type = input("Select layer type: ").strip().lower()
+        if layer_type in layer_types:
+            break
+        print("Invalid layer type. Please try again.")
+
+    suggestions = suggest_gnn_layers()[layer_type]
+    layer_class_names = [cls.__name__ for cls in suggestions]
+    while True:
+        print(f"Suggested layers for '{layer_type}': {layer_class_names}")
+        layer_name = input("Enter the layer class name: ").strip()
+        layer_class = next((cls for cls in suggestions if cls.__name__ == layer_name), None)
+        if layer_class:
+            break
+        print("Invalid layer name. Please choose from the suggestions.")
+
+    sizes = input("Enter output sizes (comma-separated, e.g. 64,64,32): ")
+    sizes = list(map(int, sizes.split(',')))
+    assert all(size > 0 for size in sizes)
+
+    input_dim = int(input("Enter input dimension: "))
+    assert input_dim > 0
+
+    layer_args = [{} for _ in sizes]
+    edge_dim = None
+    heads = 1
+
+    if layer_type == 'attention':
+        heads = int(input("Enter number of attention heads [1]: ") or 1)
+        edge_dim = int(input("Enter edge feature dimension (edge_dim): "))
+        assert heads > 1
+        assert edge_dim > 0
+
+    if input("Do you want to enter custom args for each layer? (y/n): ").strip().lower() == 'y':
+        for i in range(len(sizes)):
+            arg_str = input(f"Layer {i} args (as Python dict): ")
+            layer_args[i] = eval(arg_str)
+
+    if layer_type == 'attention' and edge_dim is not None:
+        for args in layer_args:
+            args['edge_dim'] = edge_dim
+
+    available_activations = ['relu', 'leaky_relu', 'gelu', 'tanh']
+    while True:
+        print(f"Available activations: {available_activations}")
+        activation = input("Select activation function [relu]: ").strip().lower() or 'relu'
+        if activation in available_activations:
+            break
+        print("Unsupported activation function. Try again.")
+
+    while True:
+        try:
+            dropout = input("Enter dropout rate [0.1]: ").strip()
+            dropout = float(dropout) if dropout else 0.1
+            if 0.0 <= dropout < 1.0:
+                break
+            else:
+                print("Dropout rate must be between 0 and 1.")
+        except ValueError:
+            print("Invalid float. Try again.")
+
+    while True:
+        try:
+            batch_norm = input("Enter batch_norm [Y/N]: ").strip()
+            if batch_norm in ['Y', 'N']:
+                batch_norm = {"Y": True, "N": False}.get(batch_norm)
+                break
+            else:
+                print(f"Batch norm must be Y/N. Try again.")
+        except ValueError:
+            "Invalid answer. Try again."
+
+    gnn_params = {
+        'layer': layer_class,
+        'layer_type': layer_type,
+        'sizes': sizes,
+        'input_dim': input_dim,
+        'args': layer_args,
+        'activation': activation,
+        'dropout': dropout,
+        'batch_norm': batch_norm
+    }
+
+    if layer_type == 'attention':
+        gnn_params['heads'] = heads
+
+    return gnn_params
+
+
 class CNNModule(nn.Module):
     """
+    One 1D convolution step: Conv1d, optional norm, activation, max pool, dropout.
 
+    Parameters
+    ----------
+    conv_layer : nn.Module
+    batch_norm : nn.Module or None
+    activation : nn.Module or None
+    max_pool : nn.Module or None
+    dropout : nn.Module or None
+    kernel_size : int
+    stride : int
+    pool_kernel_size : int
+        Used to update sequence lengths after the block.
     """
     def __init__(self, conv_layer, batch_norm, activation, max_pool, dropout, kernel_size, stride, pool_kernel_size):
         super().__init__()
@@ -119,6 +267,22 @@ class CNNModule(nn.Module):
 
 
 def build_conv_layers(cnn_params):
+    """
+    Character embedding plus a stack of 1D CNNModule layers for sequence input.
+
+    Parameters
+    ----------
+    cnn_params : dict
+        alphabet_len, embedding_dim; optional padding_idx, sizes, kernel_size,
+        stride, pool_size, activation, dropout, batch_norm (see implementation).
+
+    Returns
+    -------
+    cnn_blocks : nn.ModuleList
+    cnn_embedding : nn.Embedding
+    out_channels : int
+        Channel width after the last conv block.
+    """
     alphabet_len = cnn_params['alphabet_len']
     embedding_dim = cnn_params['embedding_dim']  # i.e. in_channels for the first layer
     padding_idx = cnn_params.get('padding_idx', 0)
@@ -170,9 +334,131 @@ def build_conv_layers(cnn_params):
     return nn.ModuleList(cnn_blocks), cnn_embedding, in_channels
 
 
+def build_cnn_config():
+    print("=== CNN Layer Configuration ===")
+
+    while True:
+        try:
+            alphabet_len = int(input("Enter alphabet length (num embeddings): "))
+            if alphabet_len > 0:
+                break
+            else:
+                print("Must be a positive integer.")
+        except ValueError:
+            print("Invalid integer. Try again.")
+
+    while True:
+        try:
+            embedding_dim = int(input("Enter embedding dimension (input channels): "))
+            if embedding_dim > 0:
+                break
+            else:
+                print("Must be positive integer.")
+        except ValueError:
+            print("Invalid integer. Try again.")
+
+    padding_idx_input = input("Enter padding index [0]: ").strip()
+    padding_idx = int(padding_idx_input) if padding_idx_input else 0
+
+    while True:
+        sizes_input = input("Enter conv layer output sizes (comma-separated, e.g. 256,128): ")
+        try:
+            sizes = list(map(int, sizes_input.split(',')))
+            if all(s > 0 for s in sizes):
+                break
+            else:
+                print("All sizes must be positive integers.")
+        except Exception:
+            print("Invalid input. Please enter comma-separated positive integers.")
+
+    while True:
+        try:
+            kernel_size = int(input("Enter kernel size [5]: ") or 5)
+            if kernel_size > 0:
+                break
+            else:
+                print("Must be positive integer.")
+        except ValueError:
+            print("Invalid integer. Try again.")
+
+    while True:
+        try:
+            stride = int(input("Enter stride [1]: ") or 1)
+            if stride > 0:
+                break
+            else:
+                print("Must be positive integer.")
+        except ValueError:
+            print("Invalid integer. Try again.")
+
+    while True:
+        try:
+            pool_size = int(input("Enter max pooling kernel size [2]: ") or 2)
+            if pool_size >= 1:
+                break
+            else:
+                print("Must be integer >= 1.")
+        except ValueError:
+            print("Invalid integer. Try again.")
+
+    available_activations = ['relu', 'leaky_relu', 'gelu', 'tanh']
+    while True:
+        print(f"Available activations: {available_activations}")
+        activation = input("Select activation function [relu]: ").strip().lower() or 'relu'
+        if activation in available_activations:
+            break
+        print("Unsupported activation function. Try again.")
+
+    while True:
+        try:
+            dropout = input("Enter dropout rate [0.1]: ").strip()
+            dropout = float(dropout) if dropout else 0.1
+            if 0.0 <= dropout < 1.0:
+                break
+            else:
+                print("Dropout rate must be between 0 and 1.")
+        except ValueError:
+            print("Invalid float. Try again.")
+
+    while True:
+        try:
+            batch_norm = input("Enter batch_norm [Y/N]: ").strip()
+            if batch_norm in ['Y', 'N']:
+                batch_norm = {"Y": True, "N": False}.get(batch_norm)
+                break
+            else:
+                print(f"Batch norm must be Y/N. Try again.")
+        except ValueError:
+            "Invalid answer. Try again."
+
+
+    cnn_params = {
+        'alphabet_len': alphabet_len,
+        'embedding_dim': embedding_dim,
+        'padding_idx': padding_idx,
+        'sizes': sizes,
+        'kernel_size': kernel_size,
+        'stride': stride,
+        'pool_size': pool_size,
+        'activation': activation,
+        'dropout': dropout,
+        'batch_norm': batch_norm
+    }
+
+    print("\nCNN layer config complete.")
+    return cnn_params
+
+
 class RNNModule(nn.Module):
     """
+    Runs pack_padded_sequence -> RNN -> pad_packed_sequence with a fixed max length.
 
+    Parameters
+    ----------
+    recurrent_layer : nn.Module
+        nn.LSTM, nn.GRU, or nn.RNN with batch_first=True.
+    max_len : int
+        total_length passed to pad_packed_sequence.
     """
     def __init__(self, recurrent_layer, max_len: int):
         super().__init__()
@@ -187,11 +473,27 @@ class RNNModule(nn.Module):
         return unpacked_out, lengths
 
 
-def build_recurrent_layers(self):
+def build_recurrent_layers(rnn_params: dict):
+    """
+    Token embedding plus one RNNModule (LSTM, GRU, or vanilla RNN).
 
-    alphabet_len = self.rnn_params['alphabet_len']
-    embedding_dim = self.rnn_params['embedding_dim']  # i.e. in_channels for the first layer
-    padding_idx = self.rnn_params.get('padding_idx', 0)
+    Parameters
+    ----------
+    rnn_params : dict
+        alphabet_len, embedding_dim, hidden_size, max_len, and layer (lstm, gru,
+        or rnn). Optional padding_idx, default 0.
+
+    Returns
+    -------
+    rnn_blocks : nn.ModuleList
+        Single RNNModule in a list for possible future chaining.
+    rnn_embedding : nn.Embedding
+    output_dim : int
+        RNN hidden size.
+    """
+    alphabet_len = rnn_params['alphabet_len']
+    embedding_dim = rnn_params['embedding_dim']  # i.e. in_channels for the first layer
+    padding_idx = rnn_params.get('padding_idx', 0)
 
     rnn_embedding = nn.Embedding(
         num_embeddings=alphabet_len,
@@ -199,8 +501,8 @@ def build_recurrent_layers(self):
         padding_idx=padding_idx
     )
 
-    rnn_type = self.rnn_params.get('layer', 'gru').lower()
-    hidden_size = self.rnn_params.get('hidden_size')
+    rnn_type = rnn_params.get('layer', 'gru').lower()
+    hidden_size = rnn_params.get('hidden_size')
     rnn_blocks = []  # for potential extension to chained recurrent layers
 
     # Build RNN layer
@@ -213,7 +515,7 @@ def build_recurrent_layers(self):
     else:
         raise ValueError(f"Unsupported RNN layer type: {rnn_type}")
 
-    max_len = self.rnn_params['max_len']
+    max_len = rnn_params['max_len']
     rnn_blocks.append(
         RNNModule(
             recurrent_layer=rnn_layer,
@@ -225,8 +527,97 @@ def build_recurrent_layers(self):
     return nn.ModuleList(rnn_blocks), rnn_embedding, output_dim
 
 
+def build_rnn_config():
+    print("=== RNN Layer Configuration ===")
+
+    while True:
+        try:
+            alphabet_len = int(input("Enter alphabet length (num embeddings): "))
+            if alphabet_len > 0:
+                break
+            else:
+                print("Must be a positive integer.")
+        except ValueError:
+            print("Invalid integer. Try again.")
+
+    while True:
+        try:
+            embedding_dim = int(input("Enter embedding dimension (input channels): "))
+            if embedding_dim > 0:
+                break
+            else:
+                print("Must be positive integer.")
+        except ValueError:
+            print("Invalid integer. Try again.")
+
+    padding_idx_input = input("Enter padding index [0]: ").strip()
+    padding_idx = int(padding_idx_input) if padding_idx_input else 0
+
+    rnn_types = ['lstm', 'gru', 'rnn']
+    while True:
+        print(f"Available RNN types: {rnn_types}")
+        rnn_type = input("Select RNN type [gru]: ").strip().lower() or 'gru'
+        if rnn_type in rnn_types:
+            break
+        print("Invalid RNN type. Try again.")
+
+    while True:
+        try:
+            hidden_size = int(input("Enter hidden size: "))
+            if hidden_size > 0:
+                break
+            else:
+                print("Must be positive integer.")
+        except ValueError:
+            print("Invalid integer. Try again.")
+
+    while True:
+        try:
+            max_len = int(input("Enter max sequence length: "))
+            if max_len > 0:
+                break
+            else:
+                print("Must be positive integer.")
+        except ValueError:
+            print("Invalid integer. Try again.")
+
+    rnn_params = {
+        'alphabet_len': alphabet_len,
+        'embedding_dim': embedding_dim,
+        'padding_idx': padding_idx,
+        'layer': rnn_type,
+        'hidden_size': hidden_size,
+        'max_len': max_len,
+    }
+
+    print("\nRNN layer config complete.")
+    return rnn_params
+
+
 def build_linear_layers(sizes: List[int], batch_norm: bool = True,
                         activation: str = 'relu', dropout: float = 0.0):
+    """
+    Fully connected stack: Linear blocks with optional BatchNorm, activation, dropout.
+
+    Parameters
+    ----------
+    sizes : list of int
+        Inclusive [in, hidden..., out]; at least two entries.
+    batch_norm : bool, optional
+        If True, add BatchNorm1d after each Linear (except where omitted by design).
+        Default is True.
+    activation : str, optional
+        Name passed to get_activation_fn. Default is relu.
+    dropout : float, optional
+        Dropout probability after each block when > 0. Default is 0.0.
+
+    Returns
+    -------
+    net : nn.Sequential
+        The composed MLP.
+    lin_out_size : int
+        Final output dimension (last entry of sizes).
+    """
     def init_linear(layer):
         if isinstance(layer, nn.Linear):
             nn.init.xavier_normal_(layer.weight)
@@ -254,3 +645,60 @@ def build_linear_layers(sizes: List[int], batch_norm: bool = True,
         in_features = out_features
 
     return nn.Sequential(*linear_layers), lin_out_size
+
+
+def build_lin_config():
+    print("=== Linear Layer Configuration ===")
+
+    while True:
+        sizes_input = input("Enter linear layer sizes (comma-separated, include input and output sizes, e.g. 128,64,32): ")
+        try:
+            sizes = list(map(int, sizes_input.split(',')))
+            if len(sizes) >= 2 and all(s > 0 for s in sizes):
+                break
+            else:
+                print("Provide at least two positive integers.")
+        except Exception:
+            print("Invalid input. Try again.")
+
+    while True:
+        try:
+            batch_norm = input("Enter batch_norm [Y/N]: ").strip()
+            if batch_norm in ['Y', 'N']:
+                batch_norm = {"Y": True, "N": False}.get(batch_norm)
+                break
+            else:
+                print(f"Batch norm must be Y/N. Try again.")
+        except ValueError:
+            "Invalid answer. Try again."
+
+    available_activations = ['relu', 'leaky_relu', 'gelu', 'tanh', 'none']
+    while True:
+        print(f"Available activations: {available_activations}")
+        activation = input("Select activation function [relu]: ").strip().lower() or 'relu'
+        if activation in available_activations:
+            if activation == 'none':
+                activation = None
+            break
+        print("Unsupported activation function. Try again.")
+
+    while True:
+        try:
+            dropout_input = input("Dropout rate [0.0]: ").strip()
+            dropout = float(dropout_input) if dropout_input else 0.0
+            if 0.0 <= dropout < 1.0:
+                break
+            else:
+                print("Dropout rate must be between 0 and 1.")
+        except ValueError:
+            print("Invalid float. Try again.")
+
+    linear_params = {
+        'sizes': sizes,
+        'batch_norm': batch_norm,
+        'activation': activation,
+        'dropout': dropout
+    }
+
+    print("\nLinear layer config complete.")
+    return linear_params

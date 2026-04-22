@@ -48,9 +48,9 @@ def smiles_2_ecfp(smiles: Union[str, List[str], np.ndarray[str]], radius: int = 
             return np.nan
 
         if count:
-            fp = gen.GetFingerprintAsNumPy(mol)
-        else:
             fp = gen.GetCountFingerprintAsNumPy(mol)
+        else:
+            fp = gen.GetFingerprintAsNumPy(mol)
 
         return fp
 
@@ -62,7 +62,6 @@ def smiles_2_ecfp(smiles: Union[str, List[str], np.ndarray[str]], radius: int = 
 
         if count:
             fps = [np.array(fp.ToList(), dtype=np.uint16) for fp in gen.GetCountFingerprints(mols)]  # returns UIntSparseBitVector
-
         else:
             fps = [np.array(fp, dtype=np.uint8) for fp in gen.GetFingerprints(mols)]  # returns ExplicitBitVector
 
@@ -161,9 +160,9 @@ def smiles_2_daylight(smiles: Union[str, List[str], np.ndarray[str]], min_path: 
             return np.nan
 
         if count:
-            fp = gen.GetFingerprintAsNumPy(mol)
-        else:
             fp = gen.GetCountFingerprintAsNumPy(mol)
+        else:
+            fp = gen.GetFingerprintAsNumPy(mol)
 
         return fp
 
@@ -276,9 +275,9 @@ def smiles_2_atompair(smiles: Union[str, List[str], np.ndarray[str]], min_distan
             return np.nan
 
         if count:
-            fp = gen.GetFingerprintAsNumPy(mol)
-        else:
             fp = gen.GetCountFingerprintAsNumPy(mol)
+        else:
+            fp = gen.GetFingerprintAsNumPy(mol)
 
         return fp
 
@@ -717,11 +716,12 @@ def dataframe_2_chemberta(df: pl.DataFrame, smiles_col: str = 'SMILES', descript
         delayed(smiles_2_chemberta)(smiles=smi, decimals=decimals) for smi in smiles_batches
     )
 
-    embs = chain.from_iterable(embs)
+    embs = list(chain.from_iterable(embs))
+    embs = [np.asarray(emb, dtype=np.float64).reshape(-1) if isinstance(emb, (np.ndarray, list)) else np.nan for emb in embs]
 
     smiles_df = pl.DataFrame({
         smiles_col: smiles,
-        descriptor_col: embs
+        descriptor_col: pl.Series(name=descriptor_col, values=embs, dtype=pl.Object)
     })
 
     df = df.join(smiles_df, on=smiles_col, how='left')

@@ -1,41 +1,58 @@
+"""
+Legacy standalone GNN regressor with duplicated training utilities.
+
+Use :class:`novami.deep.models.TestModel` (subclass of :class:`novami.deep.models.MMTUnit`)
+for new training code with the same architecture pattern.
+"""
+
 import os
 import inspect
 from copy import deepcopy
 from functools import reduce
 from collections import defaultdict
-from typing import Any, Dict, List, Iterable, Optional, Union
-from abc import ABC, abstractmethod
 
 import numpy as np
 from sklearn.metrics import r2_score, root_mean_squared_error, mean_absolute_error
 
 import torch
-from torch import nn, Tensor
+from torch import nn
 
-from novami.deep.modules import build_linear_layers, build_graph_layers, build_conv_layers, build_recurrent_layers
+from novami.deep.modules import build_linear_layers, build_graph_layers
 from torch_geometric.nn import global_mean_pool
 
 
-class MMTUnit(ABC, nn.Module):
+class GNNRegressor(nn.Module):
     """
-    Abstract base class for deep learning models.
+    Basic graph neural network regressor (legacy, not an :class:`MMTUnit`).
 
     Parameters
     ----------
     device : str, optional
-        Device used for calculations. Default is cpu.
+        Device string. Default is ``'cuda'``.
     num_task : int, optional
-        Number of tasks (output width for regression). Default is 1.
+        Number of regression tasks. Default is 1.
+    gnn_params : dict, optional
+        Parameters for :func:`novami.deep.modules.build_graph_layers`.
+    lin_params : dict, optional
+        Parameters for :func:`novami.deep.modules.build_linear_layers`.
+    max_norm : float, optional
+        Gradient clipping max norm. Default is 1.0.
     model_name : str, optional
-        Used in default checkpoint filenames; also stored as name and model_name.
-        Default is Unit.
+        Used in default checkpoint filenames. Default is ``'GNN'``.
     """
-    def __init__(self, device: str = 'cpu', num_task: int = 1, model_name: str = 'Unit'):
-        super(MMTUnit, self).__init__()
+
+    def __init__(self, device: str = 'cuda', num_task: int = 1, gnn_params: dict = None,
+                 lin_params: dict = None, max_norm: float = 1.0, model_name: str = "GNN"):
+        super(GNNRegressor, self).__init__()
+
+        self.set_seed(42)
+        self.hparams = self.get_hyperparameters()
         self.device = device
         self.num_task = num_task
-        self.name = model_name
-        self.model_name = model_name  # alias for checkpoints / save paths
+        self.gnn_params = deepcopy(gnn_params)
+        self.lin_params = deepcopy(lin_params)
+        self.max_norm = max_norm
+        self.model_name = model_name
 
         self.loss_fn = None
         self.optimizer = None
@@ -45,28 +62,28 @@ class MMTUnit(ABC, nn.Module):
         self.best_state_dict = None
         self.best_epoch = None
 
-    @abstractmethod
-    def forward(self, batch: dict):
-        """
-        Parameters
-        ----------
-        batch : dict
-            Mapping of batch keys to tensors (dict-like MMBatch is fine).
-        """
+        self.gnn_input_name = self.gnn_params.get('input_name', "Graph")
+        self.gnn_layer, self.gnn_out_size = build_graph_layers(self.gnn_params)
+        self.lin_params['sizes'] = [self.gnn_out_size] + self.lin_params.get('sizes') + [self.num_task]
+        self.lin_layers, _ = build_linear_layers(**self.lin_params)
 
-    @staticmethod
-    @abstractmethod
-    def score(y_true: np.ndarray, y_pred: np.ndarray, y_wgts: np.ndarray):
+    def forward(self, batch_input: dict):
         """
-        Parameters
-        ----------
-        y_true : np.ndarray
-        y_pred : np.ndarray
-        y_wgts : np.ndarray
+        Forward pass through GNN and linear layers.
         """
+        graph_batch = batch_input[self.gnn_input_name]
+
+        for layer in self.gnn_layer:
+            x = layer(graph_batch)
+            graph_batch.x = x
+
+        x_out = global_mean_pool(graph_batch.x, graph_batch.batch)
+        x_out = self.lin_layers(x_out)
+
+        return x_out
 
     def grad_norm(self):
-        """L2 norm of stacked parameter gradients (for logging)."""
+        """Calculate gradient norm."""
         total_norm = 0
         for p in self.parameters():
             if p.grad is not None:
@@ -98,15 +115,10 @@ class MMTUnit(ABC, nn.Module):
             epoch_data['y_true'].append(y_true)
             epoch_data['y_wgts'].append(y_wgts)
 
-            group = batch.get('group') if hasattr(batch, 'get') else None
-            if group is None and isinstance(batch, dict):
-                group = batch.get('group')
-
-            batch_loss = self.loss(
+            batch_loss = self.mw_loss(
                 y_pred=y_pred,
                 y_true=y_true,
-                y_wgts=y_wgts,
-                group=group,
+                y_wgts=y_wgts
             )
 
             loss, loss_wgt = batch_loss.get('Total')
@@ -122,8 +134,8 @@ class MMTUnit(ABC, nn.Module):
         if self.scheduler is not None:
             self.scheduler.step()
 
-        epoch_loss = reduce(self.combine_loss, epoch_losses)
-        epoch_loss = self.normalize_loss(epoch_loss)
+        epoch_loss = reduce(self.combine_mw_loss, epoch_losses)
+        epoch_loss = self.normalize_mw_loss(epoch_loss)
 
         epoch_metrics = self.mw_metrics(**self.pack_epoch_data(epoch_data))
 
@@ -150,21 +162,16 @@ class MMTUnit(ABC, nn.Module):
                 epoch_data['y_true'].append(y_true)
                 epoch_data['y_wgts'].append(y_wgts)
 
-                group = batch.get('group') if hasattr(batch, 'get') else None
-                if group is None and isinstance(batch, dict):
-                    group = batch.get('group')
-
-                batch_loss = self.loss(
+                batch_loss = self.mw_loss(
                     y_pred=y_pred,
                     y_true=y_true,
-                    y_wgts=y_wgts,
-                    group=group,
+                    y_wgts=y_wgts
                 )
 
                 epoch_losses.append(batch_loss)
 
-        epoch_loss = reduce(self.combine_loss, epoch_losses)
-        epoch_loss = self.normalize_loss(epoch_loss)
+        epoch_loss = reduce(self.combine_mw_loss, epoch_losses)
+        epoch_loss = self.normalize_mw_loss(epoch_loss)
 
         epoch_metrics = self.mw_metrics(**self.pack_epoch_data(epoch_data))
 
@@ -271,23 +278,9 @@ class MMTUnit(ABC, nn.Module):
 
         return torch.cat(predictions, dim=0).detach().cpu().numpy()
 
-    def loss(self, y_pred, y_true, y_wgts, group: Optional[List[Any]] = None):
+    def mw_loss(self, y_pred, y_true, y_wgts):
         """
-        Masked, weighted loss.
-
-        Parameters
-        ----------
-        y_pred : torch.Tensor
-        y_true : torch.Tensor
-        y_wgts : torch.Tensor
-        group : list, optional
-            Length B; each element iterable of tags for that row.
-
-        Returns
-        -------
-        batch_loss : dict
-            Keys Total and Task map to (scalar loss sum, scalar weight sum).
-            Optionally Group maps each tag string to the same tuple shape.
+        Masked weighted loss.
         """
 
         mask = ~torch.isnan(y_true)
@@ -304,137 +297,55 @@ class MMTUnit(ABC, nn.Module):
         per_task_loss = mw_loss.sum(dim=0)
         per_task_loss_wgt = (y_wgts * mask).sum(dim=0)
 
-        batch_loss: Dict[str, Any] = {
+        batch_loss = {
             'Total': (total_loss, total_loss_wgt),
-            'Task': (per_task_loss, per_task_loss_wgt),
+            'Task': (per_task_loss, per_task_loss_wgt)
         }
-
-        if group is not None and len(group) == y_pred.shape[0]:
-            unique_labels = set()
-            for row in group:
-                arr = np.asarray(row, dtype=object).ravel()
-                for x in arr:
-                    if x is None:
-                        continue
-                    s = str(x).strip()
-                    if not s or s.lower() == 'nan':
-                        continue
-                    unique_labels.add(s)
-
-            if unique_labels:
-                device = y_pred.device
-                dtype = mw_loss.dtype
-                b = y_pred.shape[0]
-                row_axes = (1,) * max(0, mw_loss.ndim - 1)
-                group_losses: Dict[str, tuple] = {}
-                for label in unique_labels:
-                    row_mask = np.zeros(b, dtype=np.float64)
-                    for i, row_g in enumerate(group):
-                        arr = np.asarray(row_g, dtype=object).ravel()
-                        tags = {
-                            str(x).strip()
-                            for x in arr
-                            if x is not None and str(x).strip() and str(x).strip().lower() != 'nan'
-                        }
-                        if label in tags:
-                            row_mask[i] = 1.0
-                    rm = torch.as_tensor(row_mask, device=device, dtype=dtype).view(b, *row_axes)
-                    partial = mw_loss * rm
-                    gl = partial.sum()
-                    gw = (m_wgts * rm).sum()
-                    if float(gw.detach().cpu().item()) > 0.0:
-                        group_losses[label] = (gl, gw)
-                if group_losses:
-                    batch_loss['Group'] = group_losses
 
         return batch_loss
 
     @staticmethod
-    def combine_loss(loss_1, loss_2):
+    def combine_mw_loss(loss_1, loss_2):
         total_loss = loss_1['Total'][0] + loss_2['Total'][0]
         total_wgt = loss_1['Total'][1] + loss_2['Total'][1]
 
         per_task_loss = loss_1['Task'][0] + loss_2['Task'][0]
         per_task_wgt = loss_1['Task'][1] + loss_2['Task'][1]
 
-        out: Dict[str, Any] = {
+        return {
             'Total': (total_loss, total_wgt),
-            'Task': (per_task_loss, per_task_wgt),
+            'Task': (per_task_loss, per_task_wgt)
         }
 
-        g1: Dict[str, tuple] = loss_1.get('Group') or {}
-        g2: Dict[str, tuple] = loss_2.get('Group') or {}
-        if g1 or g2:
-            dev = total_loss.device
-            dt = total_loss.dtype
-            merged: Dict[str, tuple] = {}
-            for key in set(g1) | set(g2):
-                l_sum = torch.zeros((), device=dev, dtype=dt)
-                w_sum = torch.zeros((), device=dev, dtype=dt)
-                if key in g1:
-                    l_sum = l_sum + g1[key][0]
-                    w_sum = w_sum + g1[key][1]
-                if key in g2:
-                    l_sum = l_sum + g2[key][0]
-                    w_sum = w_sum + g2[key][1]
-                merged[key] = (l_sum, w_sum)
-            out['Group'] = merged
-
-        return out
-
     @staticmethod
-    def normalize_loss(mw_loss):
+    def normalize_mw_loss(mw_loss):
         per_sample_loss = mw_loss['Total'][0] / mw_loss['Total'][1]
         per_sample_loss = np.round(per_sample_loss.detach().cpu().numpy(), 5)
         per_task_loss = mw_loss['Task'][0] / mw_loss['Task'][1]
         per_task_loss = np.round(per_task_loss.detach().cpu().numpy(), 5)
 
-        out: Dict[str, Any] = {
+        return {
             'Total': per_sample_loss,
             'Task': per_task_loss,
         }
 
-        grp = mw_loss.get('Group')
-        if grp:
-            out['Group'] = {}
-            for label, (lv, wv) in grp.items():
-                w = float(wv.detach().cpu().item())
-                if w <= 0.0:
-                    out['Group'][label] = np.float64(0.0)
-                else:
-                    out['Group'][label] = np.round((lv / wv).detach().cpu().numpy(), 5)
-
-        return out
-
     def mw_metrics(self, y_true, y_pred, y_wgts):
         """
-        Concatenate epoch tensors and call score() for overall and per-task views.
-
-        Parameters
-        ----------
-        y_true, y_pred, y_wgts : torch.Tensor
-            Stacked batch outputs (same leading dimension).
-
-        Returns
-        -------
-        out : dict
-            Total: dict from score on flattened arrays; Task: dict keyed Task_0, ...
+        Aggregate predictions for metric computation.
         """
         y_true = y_true.detach().cpu().numpy()
         y_pred = y_pred.detach().cpu().numpy()
         y_wgts = y_wgts.detach().cpu().numpy()
 
-        # Calculate Overall metrics
-        total_metrics = self.score(y_true=y_true.flatten(),
-                                   y_pred=y_pred.flatten(),
-                                   y_wgts=y_wgts.flatten())
+        total_metrics = self.score_regression(y_true=y_true.flatten(),
+                                              y_pred=y_pred.flatten(),
+                                              y_wgts=y_wgts.flatten())
 
-        # Calculate per-task metrics
         per_task_metrics = defaultdict(dict)
         for t_idx in range(self.num_task):
-            per_task_metrics[f"Task_{t_idx}"] = self.score(y_true=y_true[:, t_idx].flatten(),
-                                                           y_pred=y_pred[:, t_idx].flatten(),
-                                                           y_wgts=y_wgts[:, t_idx].flatten())
+            per_task_metrics[f"Task_{t_idx}"] = self.score_regression(y_true=y_true[:, t_idx].flatten(),
+                                                                      y_pred=y_pred[:, t_idx].flatten(),
+                                                                      y_wgts=y_wgts[:, t_idx].flatten())
         return {
             'Total': total_metrics,
             'Task': per_task_metrics,
@@ -449,21 +360,23 @@ class MMTUnit(ABC, nn.Module):
         }
         return packed_data
 
+    @staticmethod
+    def score_regression(y_true: np.ndarray, y_pred: np.ndarray, y_wgts: np.ndarray):
+
+        mask = ~np.isnan(y_true)
+        y_true = y_true[mask]
+        y_pred = y_pred[mask]
+        y_wgts = y_wgts[mask]
+
+        metrics = {
+            'R2': np.round(r2_score(y_true=y_true, y_pred=y_pred, sample_weight=y_wgts), 5),
+            'MAE': np.round(mean_absolute_error(y_true=y_true, y_pred=y_pred, sample_weight=y_wgts), 5),
+            'RMSE': np.round(root_mean_squared_error(y_true=y_true, y_pred=y_pred, sample_weight=y_wgts), 5)
+        }
+
+        return metrics
+
     def set_loss_function(self, loss_fn=torch.nn.BCEWithLogitsLoss, loss_params: dict = None):
-        """
-        Instantiate the per-element loss used in mw_loss.
-
-        Parameters
-        ----------
-        loss_fn : callable
-            Class or factory returning a torch loss module.
-        loss_params : dict, optional
-            Keyword arguments for the loss constructor.
-
-        Notes
-        -----
-        The loss must use reduction='none' so mw_loss can weight per element.
-        """
         if callable(loss_fn):
             self.loss_fn = loss_fn(**loss_params) if loss_params else loss_fn()
         else:
@@ -532,94 +445,3 @@ class MMTUnit(ABC, nn.Module):
     def set_seed(seed: int = 42):
         np.random.seed(seed)
         torch.manual_seed(seed)
-
-
-class TestModel(MMTUnit):
-    """
-    Example MMTUnit: PyG GNN stack, global mean pool, then a linear MLP head.
-
-    Parameters
-    ----------
-    device : str, optional
-        Passed to MMTUnit. Default is cpu.
-    num_task : int, optional
-        Number of regression outputs. Default is 1.
-    model_name : str, optional
-        Passed to MMTUnit. Default is Unit.
-    gnn_params : dict, optional
-        Dict for build_graph_layers: layer, layer_type (convolutional, attention,
-        edge), sizes, input_dim, optional input_name (batch key for the graph;
-        default Graph).
-    lin_params : dict, optional
-        Keyword args for build_linear_layers; the first segment of sizes is
-        filled from the GNN output width and the last from num_task.
-    max_norm : float, optional
-        Gradient clipping max norm in fit_epoch. Default is 1.0.
-    """
-    def __init__(self, device: str = 'cpu', num_task: int = 1, model_name: str = 'Unit',
-                 gnn_params: dict=None, lin_params: dict=None, max_norm: float = 1.0):
-        super(TestModel, self).__init__(device=device, num_task=num_task, model_name=model_name)
-
-        self.gnn_params = deepcopy(gnn_params)
-        self.lin_params = deepcopy(lin_params)
-        self.max_norm = max_norm
-
-        self.gnn_input_name = self.gnn_params.get('input_name', "Graph")
-        self.gnn_layer, self.gnn_out_size = build_graph_layers(self.gnn_params)
-        self.lin_params['sizes'] = [self.gnn_out_size] + self.lin_params.get('sizes') + [self.num_task]
-        self.lin_layers, _ = build_linear_layers(**self.lin_params)
-
-    def forward(self, batch_input: dict):
-        """
-        Message passing on the graph batch, then global mean pool and lin_layers.
-
-        Parameters
-        ----------
-        batch_input : dict
-            Must contain the batched graph under gnn_params['input_name']
-            (default key Graph).
-
-        Returns
-        -------
-        x_out : torch.Tensor
-            Shape (batch, num_task).
-        """
-        graph_batch = batch_input[self.gnn_input_name]
-
-        for layer in self.gnn_layer:
-            x = layer(graph_batch)
-            graph_batch.x = x
-
-        x_out = global_mean_pool(graph_batch.x, graph_batch.batch)
-        x_out = self.lin_layers(x_out)
-
-        return x_out
-
-    @staticmethod
-    def score(y_true: np.ndarray, y_pred: np.ndarray, y_wgts: np.ndarray):
-        """
-        R2, MAE, RMSE from sklearn after dropping NaN y_true and applying weights.
-
-        Parameters
-        ----------
-        y_true : np.ndarray
-        y_pred : np.ndarray
-        y_wgts : np.ndarray
-
-        Returns
-        -------
-        metrics : dict
-            Keys R2, MAE, RMSE with values rounded to 5 decimals.
-        """
-        mask = ~np.isnan(y_true)
-        y_true = y_true[mask]
-        y_pred = y_pred[mask]
-        y_wgts = y_wgts[mask]
-
-        metrics = {
-            'R2': np.round(r2_score(y_true=y_true, y_pred=y_pred, sample_weight=y_wgts), 5),
-            'MAE': np.round(mean_absolute_error(y_true=y_true, y_pred=y_pred, sample_weight=y_wgts), 5),
-            'RMSE': np.round(root_mean_squared_error(y_true=y_true, y_pred=y_pred, sample_weight=y_wgts), 5)
-        }
-
-        return metrics

@@ -1,6 +1,5 @@
-import copy
 from collections import Counter
-from typing import Union, Iterable, List
+from typing import Union, Iterable, List, Tuple
 
 import numpy as np
 from rdkit import Chem, RDLogger
@@ -15,7 +14,19 @@ from torch_geometric.data import Data as Graph
 
 class GraphVectorizer:
     """
-    A non-inflated version of MMGV. Just give it a list of SMILES and you're good to go :)
+    Turn SMILES into torch_geometric Data (x, edge_index, edge_attr).
+
+    Simpler than the legacy MMGV class in deprecated.deep.mmgv; use with MMDataset
+    modality graph.
+
+    Parameters
+    ----------
+    atom_encoding : dict, optional
+        Element symbol to index; default covers common organic elements.
+    bond_encoding : dict, optional
+        Bond type string to index; default SINGLE, DOUBLE, TRIPLE, AROMATIC.
+    suppress : bool, optional
+        If True, silence RDKit logs. Default is True.
     """
 
     def __init__(self, atom_encoding: dict = None, bond_encoding: dict = None,
@@ -100,7 +111,7 @@ class GraphVectorizer:
 
         return bond_edges, bond_enc
 
-    def encode_mol_bonds(self, mol: Chem.rdchem.Mol) -> (np.ndarray, np.ndarray):
+    def encode_mol_bonds(self, mol: Chem.rdchem.Mol) -> Tuple[np.ndarray, np.ndarray]:
 
         if len(mol.GetBonds()) == 0:
             return np.array([0, 0]).reshape(2, 1), np.zeros(shape=(1, self.bond_encoding_size + 3))
@@ -127,7 +138,17 @@ class GraphVectorizer:
 
     def from_smiles(self, smiles: str):
         """
-        Change to work internally on np.ndarray. Missing values are expected to be nan
+        Build one unlabeled graph Data object from a SMILES string.
+
+        Parameters
+        ----------
+        smiles : str
+            SMILES parsed with RDKit sanitize=True.
+
+        Returns
+        -------
+        data : torch_geometric.data.Data
+            Node features, edge_index, edge_attr.
         """
 
         mol = Chem.MolFromSmiles(smiles, sanitize=True)
@@ -144,6 +165,18 @@ class GraphVectorizer:
         return Graph(**graph_data)
 
     def encode(self, smiles: Union[str, Iterable[str]]):
+        """
+        Vectorize one SMILES or many; returns a list of Data graphs.
+
+        Parameters
+        ----------
+        smiles : str or iterable of str
+
+        Returns
+        -------
+        list
+            torch_geometric Data instances in input order.
+        """
         if isinstance(smiles, str):
             return [self.from_smiles(smiles)]
         else:
@@ -155,6 +188,24 @@ class GraphVectorizer:
 
 
 class StringVectorizer:
+    """
+    Tokenize SMILES, DeepSMILES, or SELFIES into integer indices for embedding layers.
+
+    Call prepare_alphabet on a corpus before from_smiles if alphabet is None.
+
+    Parameters
+    ----------
+    alphabet : tuple, optional
+        Token strings in vocabulary order; if None, set later via prepare_alphabet.
+    alphabet_type : str, optional
+        One of smiles, deepsmiles, selfies. Default is smiles.
+    max_length : int, optional
+        Maximum token count after split; longer strings raise ValueError.
+    padding : bool, optional
+        If True, pad sequences to max_length with pad token when alphabet is built.
+    suppress : bool, optional
+        If True, silence RDKit logs. Default is True.
+    """
     def __init__(self, alphabet: tuple = None, alphabet_type: str = 'smiles', max_length: int = None,
                  padding: bool = True, suppress: bool = True):
 
@@ -168,15 +219,32 @@ class StringVectorizer:
         if suppress:
             RDLogger.DisableLog('rdApp.*')
 
+        r_atoms = r"Cl|Br|Si|Se|Na|Ca|Li|Mg|Zn|Fe|Cu|Mn|Hg|Sn|As|Bi|Cd|se|Cr|Sb"
+
         self.regex_patterns = {
-            'smiles': re.compile(r"(\[|]|Cl|Br|Si|Se|Na|Ca|Li|Mg|Zn|Fe|Cu|Mn|Hg|Sn|[A-Z]|[a-z]|[=#/\\().+\-:]|\d)"),
-            'deepsmiles': re.compile(r"(\[|]|Br|Cl|Si|Se|Na|Ca|Li|Mg|Zn|Fe|Cu|Mn|Hg|Sn|[A-Z]|[a-z]|[=#/\\().+\-:]|\)+|\(+|\d)"),
+            'smiles': re.compile(rf"(\[|]|{r_atoms}|[A-Z]|[a-z]|[=#/\\().+\-:]|\d)"),
+            'deepsmiles': re.compile(rf"(\[|]|{r_atoms}|[A-Z]|[a-z]|[=#/\\().+\-:]|\)+|\(+|\d)"),
             'selfies': re.compile(r"\[.*?]")
         }
         self.char2idx = {char: idx for idx, char in enumerate(self.alphabet)} if self.alphabet is not None else None
         self.idx2char = {idx: char for idx, char in enumerate(self.alphabet)} if self.alphabet is not None else None
 
     def from_smiles(self, smiles: str):
+        """
+        Encode one string to (int32 token tensor, int length).
+
+        Parameters
+        ----------
+        smiles : str
+            Input in the format given by alphabet_type.
+
+        Returns
+        -------
+        tensor : torch.Tensor
+            int32, shape (seq_len,) or (max_length,) if padding.
+        length : int
+            True token count before padding.
+        """
         if self.char2idx is None:
             raise RuntimeError("Alphabet not initialized. Call prepare_alphabet to obtain it.")
 
@@ -192,6 +260,17 @@ class StringVectorizer:
         return tensor, length
 
     def encode(self, smiles: Union[str, Iterable[str]]):
+        """
+        Same as from_smiles but accepts a str or iterable of str; always returns a list.
+
+        Parameters
+        ----------
+        smiles : str or iterable of str
+
+        Returns
+        -------
+        list [tensor, length]
+        """
         if isinstance(smiles, str):
             return [self.from_smiles(smiles)]
         else:
@@ -202,17 +281,59 @@ class StringVectorizer:
                                  "or iterable of strings")
 
     def decode(self, indices: List[int]):
+        """
+        Map token indices back to a string (best-effort for SMILES-like alphabets).
+
+        Parameters
+        ----------
+        indices : list of int
+            Token indices.
+
+        Returns
+        -------
+        str
+            Concatenated characters; unknown indices become unk.
+        """
         return ''.join(self.idx2char.get(i, '<unk>') for i in indices)
 
     def convert(self, smiles: str):
+        """
+        Normalize input to the token string form used by split (SMILES as-is, etc.).
+
+        Parameters
+        ----------
+        smiles : str
+
+        Returns
+        -------
+        str
+            SMILES, DeepSMILES, or SELFIES string depending on alphabet_type.
+        """
         if self.alphabet_type == 'smiles':
             return smiles
         elif self.alphabet_type == 'deepsmiles':
             return self.ds_converter.encode(smiles)
         elif self.alphabet_type == 'selfies':
             return sf.encoder(smiles)
+        else:
+            raise ValueError(f"Unsupported alphabet type: {self.alphabet_type}")
 
     def split(self, string):
+        """
+        Regex tokenization and length; enforces max_length when set.
+
+        Parameters
+        ----------
+        string : str
+            Already converted (e.g. via convert).
+
+        Returns
+        -------
+        tokens : list
+            Token strings.
+        length : int
+            len(tokens).
+        """
         split_string = self.regex_patterns[self.alphabet_type].findall(string)
         length = len(split_string)
 
@@ -222,10 +343,37 @@ class StringVectorizer:
         return split_string, length
 
     def pad(self, string, length):
+        """
+        Append pad tokens so token list length equals max_length.
+
+        Parameters
+        ----------
+        string : list
+            Token list after split.
+        length : int
+            Original length before padding.
+
+        Returns
+        -------
+        list
+            Padded token list.
+        """
         return string + ['<pad>'] * (self.max_length - length)
 
     def prepare_alphabet(self, smiles: List[str]):
+        """
+        Build vocabulary from corpus token frequency (most common first).
 
+        Parameters
+        ----------
+        smiles : list of str
+            Corpus of SMILES (or converted strings) for counting.
+
+        Returns
+        -------
+        alphabet : list
+            Token list with unk and optional pad prepended when padding is True.
+        """
         token_counter = Counter()
 
         for smi in smiles:
@@ -239,247 +387,3 @@ class StringVectorizer:
             alphabet = ['<pad>'] + alphabet
 
         return alphabet
-
-class MMGV:
-    """
-    A Class for transforming RDKit molecules into graphs used in torch_geometric package.
-    Multi-modal approaches are enabled.
-
-    Parameters
-    ----------
-    atom_enc: dict
-        A dictionary mapping element name to its position.
-    bond_enc: dict
-        A dictionary mapping bond name to its position.
-    suppress: bool
-        An option to suppress RDKit warnings. Default is True
-    mode: str
-        Switch between training (train) and evaluation (eval). Default is train.
-
-    """
-
-    def __init__(self, atom_enc: dict = None, bond_enc: dict = None, suppress: bool = True, mode: str = 'train'):
-
-        if atom_enc is None:
-            self.atom_encoding = {'C': 0, 'N': 1, 'O': 2, 'S': 3, 'F': 4, 'P': 5, 'Cl': 6, 'Mg': 7,
-                                  'Na': 8, 'Br': 9, 'Fe': 10, 'Ca': 11, 'Cu': 12, 'Mc': 13, 'Pd': 14,
-                                  'Pb': 15, 'K': 16, 'I': 17, 'Al': 18, 'Ni': 19, 'Mn': 20}
-        else:
-            self.atom_encoding = atom_enc
-
-        self.groups = {
-            0: ['H', 'C', 'N', 'O', 'P', 'S'],  # non_metals
-            1: ['Li', 'Na', 'K', 'Rb', ' Cs', 'Fr'],  # alkaline metals
-            2: ['Be', 'Mg', 'Ca', 'Sr', ' Ba', 'Ra'],  # alkaline earth metals
-            3: ['Sc', 'Ti', 'V', 'Cr', 'Mn', 'Fe', 'Co', 'Ni', 'Cu', 'Zn',
-                'Y', 'Zr', 'Nb', 'Mo', 'Tc', 'Ru', 'Rh', 'Pd', 'Age', 'Cd',
-                'Hf', 'Ta', 'W', 'Re', 'Os', 'Ir', 'Pt', 'Au', 'Hg',
-                'Rf', 'Db', 'Sg', 'Hs', 'Mt', 'Ds', 'Rg', 'Cn'],  # transition metals
-            4: ['Al', 'Ga', 'In', 'Sn', 'Tl', 'Pb', 'Bi', 'Nh', 'Fl', 'Mc', 'Lv'],  # metals
-            5: ['B', 'Si', 'Ge', 'As', 'Sb', 'Te', 'Po'],  # metalloids
-            6: ['F', 'Cl', 'Br', 'I', 'At', 'Ts'],  # halogens
-            7: ['He', 'Ne', 'Ar', 'Kr', 'Xe', 'Rn', 'Og'],  # noble gases
-            8: ['La', 'Ce', 'Pr', 'Nd', 'Pm', 'Sm', 'Eu', 'Gd', 'Tb', 'Dy', 'Ho', 'Er', 'Tm', 'Yb', 'Lu'],  # lanthanide
-            9: ['Ac', 'Th', 'Pa', 'U', 'Np', 'Pu', 'Am', 'Cm', 'Bk', 'Cf', 'Es', 'Fm', 'Md', 'No', 'Lr']  # actinides
-        }
-
-        self.group_encoding = {}
-        for group, elements in self.groups.items():
-            for element in elements:
-                self.group_encoding[element] = group
-
-        self.atom_encoding_size = len(self.atom_encoding) + 1
-        self.group_encoding_size = len(self.groups) + 1
-
-        if bond_enc is None:
-            self.bond_encoding = {'SINGLE': 0, 'DOUBLE': 1, 'TRIPLE': 2, 'AROMATIC': 3}
-        else:
-            self.bond_encoding = bond_enc
-
-        self.bond_encoding_size = len(self.bond_encoding) + 1
-
-        if suppress:
-            RDLogger.DisableLog('rdApp.*')
-        self.mode = mode
-        self.embed_params = ETKDGv3()
-
-    def encode_atom(self, atom):
-
-        type_enc = np.zeros(shape=(self.atom_encoding_size,))
-        type_enc[self.atom_encoding.get(atom.GetSymbol(), -1)] = 1
-
-        group_enc = np.zeros(shape=(self.group_encoding_size,))
-        group_enc[self.group_encoding.get(atom.GetSymbol(), -1)] = 1
-
-        prop_enc = np.array([atom.GetFormalCharge(), atom.GetHybridization().real, atom.GetIsAromatic(),
-                             atom.GetNumExplicitHs(), atom.GetDegree(), atom.IsInRing()])
-
-        return np.hstack((type_enc, group_enc, prop_enc))
-
-    def encode_mol_atoms(self, mol: Chem.rdchem.Mol) -> np.ndarray:
-
-        atom_list = [self.encode_atom(atom) for atom in mol.GetAtoms()]
-        atom_list.append(np.zeros(atom_list[0].shape))  # add a fake atom to the list
-
-        atom_array = np.vstack(atom_list).astype(np.float64)
-
-        return atom_array
-
-    def encode_bond(self, bond):
-
-        start_idx = bond.GetBeginAtomIdx()
-        end_idx = bond.GetEndAtomIdx()
-        bond_edges = [[start_idx, end_idx], [end_idx, start_idx]]  # connectivity
-
-        bond_type = str(bond.GetBondType())
-        type_enc = np.zeros(shape=(self.bond_encoding_size,))
-        type_enc[self.bond_encoding.get(bond_type, -1)] = 1
-
-        prop_enc = np.array([bond.GetIsAromatic(), bond.GetIsConjugated(), bond.IsInRing()])
-        bond_enc = np.hstack((type_enc, prop_enc))  # properties
-
-        return bond_edges, bond_enc
-
-    def encode_mol_bonds(self, mol: Chem.rdchem.Mol) -> (np.ndarray, np.ndarray):
-
-        if len(mol.GetBonds()) == 0:
-            return np.array([0, 0]).reshape(2, 1), np.zeros(shape=(1, self.bond_encoding_size + 3))
-
-        edges = []  # of shape [2, num_edges]
-        encoding = []  # of shape [num_edges, encoding_size]
-
-        for bond in mol.GetBonds():
-            bond_edges, bond_enc = self.encode_bond(bond)
-
-            edges.extend(bond_edges)
-            encoding.extend([bond_enc, bond_enc])
-
-        virtual_encoding = np.zeros(encoding[0].shape)
-
-        for i in range(num_atoms := len(mol.GetAtoms())):
-            edges.extend([[i, num_atoms], [num_atoms, i]])
-            encoding.extend([virtual_encoding, virtual_encoding])
-
-        edge_array = np.array(edges).T.astype(np.float64)
-        bond_array = np.vstack(encoding).astype(np.float64)
-
-        return edge_array, bond_array
-
-    def from_smiles(self, smiles: str, label: np.ndarray, weight: np.ndarray = None, kwargs: dict = None):
-        """
-        Change to work internally on np.ndarray. Missing values are expected to be nan
-        """
-
-        mol = Chem.MolFromSmiles(smiles, sanitize=True)
-
-        atoms_encoding_array = self.encode_mol_atoms(mol)
-        edges_array, bonds_encoding_array = self.encode_mol_bonds(mol)
-
-        graph_data = {
-            'x': torch.FloatTensor(atoms_encoding_array),
-            'edge_index': torch.LongTensor(edges_array),
-            'edge_attr': torch.FloatTensor(bonds_encoding_array),
-            'y': torch.FloatTensor(label.reshape(1, -1)),
-            'weights': torch.FloatTensor(weight.reshape(1, -1))
-        }
-
-        if kwargs is not None:
-            for key, value in kwargs.items():
-                graph_data[key] = torch.FloatTensor(value).reshape(1, -1)  # required by torch.cat
-
-        return Graph(**graph_data)
-
-    def from_lists(self, descriptor_list: List[dict], label_list: List[np.ndarray], weight_list: List[np.ndarray] = None):
-        """
-        Descriptor_list must contain at least the 'SMILES': str. Any additional key should contain 1D numpy ndarray.
-        Set up this way to be compatible with all the fit(x_values, y_values) conventions used in other modules/sklearn/etc.
-        descriptor_list should be easily obtainable from df[cols].to_dict(orient='records').
-        """
-
-        smiles_list = [entry['SMILES'] for entry in descriptor_list]
-        metadata_list = [{k: v for k, v in entry.items() if k != 'SMILES'} for entry in descriptor_list]
-
-        if weight_list is None:
-            weight_list = [np.ones_like(label) for label in label_list]
-
-        return [self.from_smiles(smiles=smi, label=lab, weight=wgt, kwargs=meta) for smi, lab, wgt, meta
-                in zip(smiles_list, label_list, weight_list, metadata_list)]
-
-    @staticmethod
-    def validate_smiles(smiles: str):
-        """
-        Validate a SMILES string.
-
-        Parameters
-        ----------
-        smiles : str
-            SMILES string to be validated.
-
-        Returns
-        -------
-        bool
-            True if the SMILES string is valid, False otherwise.
-        """
-        if not isinstance(smiles, str):
-            return False
-
-        try:
-            mol = Chem.MolFromSmiles(smiles, sanitize=True)
-            if mol is not None:
-                return True
-            else:
-                return False
-        except Exception as e:
-            print(f'The following string is invalid: < {smiles} > due to {e}')
-            return False
-
-    def embed_molecule(self, mol, attempts: int = 10):
-        """
-        Attempt to find lowest-energy 3D coordinates from 2D molecule.
-        """
-        mol = Chem.AddHs(mol)
-        mols = []
-        energies = []
-
-        def optimize_molecule(mol_, conf_id_):
-            ex_code = MMFFOptimizeMolecule(mol_, maxIters=500, confId=conf_id_)
-            match ex_code:
-                case -1:  # optimization not possible, return whatever molecule was embedded
-                    print('Could not setup the force field for provided molecule')
-                    return mol_, np.nan
-                case 0:  # optimization converged, proceed normally
-                    prop = MMFFGetMoleculeProperties(mol_)
-                    ff = MMFFGetMoleculeForceField(mol_, prop)
-                    energy_ = ff.CalcEnergy()
-                    return mol_, energy_
-                case 1:  # force field setup correct, but convergence not reached
-                    _ = MMFFOptimizeMolecule(mol_, maxIters=5000, confId=conf_id_)
-                    prop = MMFFGetMoleculeProperties(mol_)
-                    ff = MMFFGetMoleculeForceField(mol_, prop)
-                    energy_ = ff.CalcEnergy()
-                    return mol_, energy_
-
-        for attempt in range(attempts):
-            mol = copy.deepcopy(mol)
-            conf_id = EmbedMolecule(mol, self.embed_params)
-            if conf_id >= 0:  # in case of correct embedding the returned number is not negative
-                mol, energy = optimize_molecule(mol, conf_id)
-                mols.append(mol)
-                energies.append(energy)
-            else:
-                conf_id = EmbedMolecule(mol, maxAttempts=1000, useRandomCoords=True)
-                if isinstance(conf_id, int):  # check if other embedding works
-                    mol, energy = optimize_molecule(mol, conf_id)
-                    mols.append(mol)
-                    energies.append(energy)
-                else:
-                    return mol  # return unoptimized mol
-
-        if not all([x is np.nan for x in energies]):  # if there is at least one correct energy
-            min_id = np.nanargmin(energies)
-            return mols[min_id]  # return mol with the lowest energy
-        else:
-            print(f'Optimization not possible for < {Chem.MolToSmiles(mol)} >')
-            mol = copy.deepcopy(mol)
-            EmbedMolecule(mol)
-            return mol

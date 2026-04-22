@@ -20,8 +20,8 @@ import torch_geometric
 from torch_geometric.utils import to_dense_batch
 from torch_geometric.nn import global_mean_pool, global_max_pool
 
-from novami.deep.dataset import StringDataset, GraphDataset
-from novami.deep.vectorizer import MMGV
+from deprecated.deep.dataset import StringDataset, GraphDataset
+from deprecated.deep.mmgv import MMGV
 
 
 

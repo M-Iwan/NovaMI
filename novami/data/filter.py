@@ -48,10 +48,10 @@ def filter_outliers(df: pl.DataFrame, smiles_col: str = 'SMILES', kwargs: Dict =
     )
 
     df = df.with_columns([
-        pl.col('Mol').map_elements(Descriptors.MolWt, return_dtype=pl.Float32).alias('MolWt'),
-        pl.col('Mol').map_elements(Descriptors.MolLogP, return_dtype=pl.Float32).alias('MolLogP'),
-        pl.col('Mol').map_elements(Descriptors.MolMR, return_dtype=pl.Float32).alias('MolMR'),
-        pl.col('Mol').map_elements(Descriptors.TPSA, return_dtype=pl.Float32).alias('TPSA'),
+        pl.col('Mol').map_elements(Descriptors.MolWt, return_dtype=pl.Float64).alias('MolWt'),
+        pl.col('Mol').map_elements(Descriptors.MolLogP, return_dtype=pl.Float64).alias('MolLogP'),
+        pl.col('Mol').map_elements(Descriptors.MolMR, return_dtype=pl.Float64).alias('MolMR'),
+        pl.col('Mol').map_elements(Descriptors.TPSA, return_dtype=pl.Float64).alias('TPSA'),
         pl.col('Mol').map_elements(Descriptors.HeavyAtomCount, return_dtype=pl.Int16).alias('NumHeavyAtom'),
         pl.col('Mol').map_elements(Descriptors.NumHAcceptors, return_dtype=pl.Int16).alias('NumHAcceptors'),
         pl.col('Mol').map_elements(Descriptors.NumHDonors, return_dtype=pl.Int16).alias('NumHDonors'),
