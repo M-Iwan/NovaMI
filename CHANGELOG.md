@@ -1,3 +1,17 @@
+# [0.4.0]: 22-04-2026
+
+[Added]
+- Finished cleaning up the novami.deep module; all classes, functions, and DL templates *should* work well with each other
+- Partially missing documentation in the novami.deep.vectorizer and utils
+- Unit test suite for molecular descriptors, distance calculations, partition, and data loading of deep module
+
+[Fixed]
+- Fixed the swapped GetFingerprintAsNumpy and GetCountFingerprintAsNumpy calls in smiles_2_* when a single SMILES string was passed
+- Non-compatible Float32 assignment in outlier filter. Now uses Float64
+
+[Removed]
+- The remaining old code from the novami.deep module
+
 # [0.3.5]: 01-04-2026
 
 [Added]
@@ -12,7 +26,7 @@
 - The MAD deduplication procedure is now used
 
 [Removed]
-- A lot of old code from the deep module
+- A lot of old code from the novami.deep module
 - ``novami/deep/model.py`` (MMMTGNN and backbones); use ``deprecated/deep/mmmtgnn.py`` instead
 
 
