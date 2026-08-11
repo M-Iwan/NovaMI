@@ -229,14 +229,9 @@ def filter_uncommon(df: pl.DataFrame, smiles_col: str = "SMILES", out_col: str =
     return df
 
 
-def mark_uncommon_smiles(smiles: Union[str, List[str], npt.NDArray[np.str_]]):
+def flag_organometallics_smiles(smiles: Union[str, List[str], npt.NDArray[np.str_]]):
     """
-    Flag SMILES containing elements rarely found in pharmaceutical/drug-like substances.
-
-    Allowed elements cover common organic atoms, halogens, and metals/metalloids
-    seen in approved drugs and pharmaceutical excipients/salts/contrast agents
-    (e.g. Li, Na, K, Ca, Mg, Fe, Co, Cu, Zn, As, Se, Mo, Tc, Ag, Sn, Sb, I, Gd,
-    Pt, Au, Bi).
+    Flag SMILES containing potential organometallics: Fe, Co, Mn, Cu, Zn, Mo, Tc, Ag, Pt, Gd, Au, Bi
 
     Parameters
     ----------
@@ -248,10 +243,8 @@ def mark_uncommon_smiles(smiles: Union[str, List[str], npt.NDArray[np.str_]]):
     """
     RDLogger.DisableLog('rdApp.*')
 
-    allowed_atomic_nums = {
-        1, 3, 5, 6, 7, 8, 9, 11, 12, 13, 14, 15, 16,
-        17, 19, 20, 25, 26, 27, 29, 30, 33, 34, 35, 42,
-        43, 47, 50, 51, 53, 64, 78, 79, 83
+    organometallics = {
+        25, 26, 27, 29, 30, 42, 43, 47, 50, 64, 78, 79, 83
     }
 
     def process_smiles(smi: str):
@@ -262,10 +255,10 @@ def mark_uncommon_smiles(smiles: Union[str, List[str], npt.NDArray[np.str_]]):
             print(f'Unable to construct a valid molecule from < {smi} >')
             return None
         try:
-            uncommon = sorted(
-                {atom.GetSymbol() for atom in mol.GetAtoms() if atom.GetAtomicNum() not in allowed_atomic_nums}
+            orgm = sorted(
+                {atom.GetSymbol() for atom in mol.GetAtoms() if atom.GetAtomicNum() in organometallics}
             )
-            return " | ".join(uncommon)
+            return " | ".join(orgm)
         except Exception as e:
             print(f'Could not process < {smi} > due to \n{e}')
             return None
@@ -280,10 +273,10 @@ def mark_uncommon_smiles(smiles: Union[str, List[str], npt.NDArray[np.str_]]):
         raise TypeError(f"Expected smiles to be one of str, List[str], npt.NDArray[np.str_] got {type(smiles)} instead")
 
 
-def mark_uncommon(df: pl.DataFrame, smiles_col: str = "SMILES", out_col: str = "uncommon_elements",
-                  n_jobs: int = 1, batch_size: int = 512, timeout: int = 600):
+def flag_organometallics(df: pl.DataFrame, smiles_col: str = "SMILES", out_col: str = "Organometallics",
+                         n_jobs: int = 1, batch_size: int = 512, timeout: int = 600):
     """
-    Flag rows whose SMILES contain elements rarely found in pharmaceutical/drug-like .substances
+    Flag rows whose SMILES are potential organometallics.
 
     Parameters
     ----------
@@ -316,7 +309,7 @@ def mark_uncommon(df: pl.DataFrame, smiles_col: str = "SMILES", out_col: str = "
     smiles_batches = np.array_split(smiles, n_batches)
 
     results = Parallel(n_jobs=n_jobs, verbose=1, timeout=timeout, backend="loky")(
-        delayed(mark_uncommon_smiles)(smiles=batch) for batch in smiles_batches
+        delayed(flag_organometallics_smiles)(smiles=batch) for batch in smiles_batches
     )
 
     flags = list(chain.from_iterable(results))
