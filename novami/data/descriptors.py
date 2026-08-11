@@ -611,6 +611,108 @@ def dataframe_2_rdkit(df: pl.DataFrame, smiles_col: str = 'SMILES', descriptor_c
     return df
 
 
+def smiles_2_common_rdkit(smiles: Union[str, List[str], np.ndarray[str]], decimals: int = 5):
+    """
+    Convert SMILES to common RDKit descriptors.
+
+    Parameters
+    ----------
+    smiles: Union[str, List[str], np.ndarray[str]]
+        A SMILES or list of SMILES strings.
+    decimals: int
+        Number of decimals to keep.
+
+    Returns
+    -------
+    Union[dict, List[dict]]
+        A dict (single SMILES) or list of dicts (multiple SMILES), with:
+        MolWt, LogP, MolMR, NHeavy, NHetero, NHBA, NHBD, NRotBonds, NRings, TPSA.
+    """
+    keys = ["MolWt", "LogP", "MolMR", "NHeavy", "NHetero", "NHBA", "NHBD", "NRotBonds", "NRings", "TPSA"]
+
+    def get_desc(mol):
+        crippen = rdMolDescriptors.CalcCrippenDescriptors(mol)
+        return {
+            "MolWt": np.round(rdMolDescriptors.CalcExactMolWt(mol), decimals),
+            "LogP": np.round(crippen[0], decimals),
+            "MolMR": np.round(crippen[1], decimals),
+            "NHeavy": rdMolDescriptors.CalcNumHeavyAtoms(mol),
+            "NHetero": rdMolDescriptors.CalcNumHeteroatoms(mol),
+            "NHBA": rdMolDescriptors.CalcNumHBA(mol),
+            "NHBD": rdMolDescriptors.CalcNumHBD(mol),
+            "NRotBonds": rdMolDescriptors.CalcNumRotatableBonds(mol),
+            "NRings": rdMolDescriptors.CalcNumRings(mol),
+            "TPSA": np.round(rdMolDescriptors.CalcTPSA(mol), decimals),
+        }
+
+    nan_dict = {key: np.nan for key in keys}
+
+    if isinstance(smiles, str):
+        if (mol := Chem.MolFromSmiles(smiles)) is None:
+            print(f'Unable to construct a valid molecule from < {smiles} >')
+            return nan_dict
+
+        return get_desc(mol)
+
+    elif isinstance(smiles, (list, np.ndarray)):
+        mols = [Chem.MolFromSmiles(smi) for smi in smiles]
+        if any(mol is None for mol in mols):
+            print(f"At least one valid molecule cannot be constructed from provided SMILES")
+            return [nan_dict.copy() for _ in mols]
+
+        return [get_desc(mol) for mol in mols]
+
+    else:
+        raise TypeError(f"Expected smiles to be str or Union[List[str], np.ndarray[str]], got {type(smiles)} instead")
+
+
+def dataframe_2_common_rdkit(df: pl.DataFrame, smiles_col: str = 'SMILES',
+                             decimals: int = 5, n_jobs: int = 1, batch_size: int = 512):
+    """
+    Convert SMILES in a DataFrame to common RDKit descriptors.
+
+    Parameters
+    ----------
+    df : pl.DataFrame
+        A polars DataFrame with data.
+    smiles_col : str, optional
+        Name of column with SMILES.
+    decimals: int
+        Number of decimals to keep.
+    n_jobs: int, optional
+        Number of cores to use for calculations.
+    batch_size: int, optional
+        Number of SMILES per batch.
+
+    Returns
+    -------
+    df : pl.DataFrame
+        A polars DataFrame with added columns:
+        MolWt, LogP, MolMR, NHeavy, NHetero, NHBA, NHBD, NRotBonds, NRings, TPSA.
+    """
+
+    keys = ["MolWt", "LogP", "MolMR", "NHeavy", "NHetero", "NHBA", "NHBD", "NRotBonds", "NRings", "TPSA"]
+
+    smiles = list(set(df[smiles_col].to_list()))
+    n_batches = math.ceil(len(smiles) / batch_size)
+    smiles_batches = np.array_split(smiles, n_batches)
+
+    desc_batches = Parallel(n_jobs=n_jobs, verbose=1, timeout=60, backend='loky')(
+        delayed(smiles_2_common_rdkit)(smiles=smi, decimals=decimals) for smi in smiles_batches
+    )
+
+    desc: List[dict] = list(chain.from_iterable(desc_batches))
+
+    smiles_df = pl.DataFrame({
+        smiles_col: smiles,
+        **{key: [d[key] for d in desc] for key in keys},
+    })
+
+    df = df.join(smiles_df, on=smiles_col, how='left')
+
+    return df
+
+
 def smiles_2_chemberta(smiles: Union[str, List[str], np.ndarray[str]], decimals: int = 5):
     """
     Parameters
