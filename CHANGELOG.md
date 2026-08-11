@@ -1,3 +1,13 @@
+# [0.4.1]: 11-08-2026
+
+[Added]
+- Full update of the standardize module:
+  - moved from pandas to polars
+  - added support for parallel processing
+  - added additional normalization step and reionize/unionize step
+- Added function for deduplication of mixed censored/exact data (mad_censored_duplicates)
+- Added more filtering options
+
 # [0.4.0]: 22-04-2026
 
 [Added]

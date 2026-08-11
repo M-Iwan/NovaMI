@@ -9,7 +9,7 @@ If you find the repo or its parts useful, it can be installed using:
 The usual versioning conventions are followed loosely, with minor version bumps usually meaning a substantial update to a specific module.
 
 ### Repository Structure
-Last updated on version: 0.4.0
+Last updated on version: 0.4.1
 
 ```
 novami/
@@ -65,8 +65,8 @@ novami/
 │   ├── standardize/   
 │   │   ├── clean.py   Wrappers around RDKit functions for standaradizing SMILES
 │   │   ├── duplicates.py   Duplicate processing based on Median Absolute Deviation
-│   │   ├── filter.py   Filter based on selected descriptors
-│   │   └── validate.py   Check validity of structure
+│   │   ├── filter.py   Filter based on selected features
+│   │   └── validate.py   Structure validation and error finding
 │   └── visualize/
 │       ├── ecdf.py   Emprical Cumulative Distribution Function of molecular inter-distance 
 │       ├── embedding.py   t-SNE and UMAP

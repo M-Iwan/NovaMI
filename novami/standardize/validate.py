@@ -1,45 +1,105 @@
-import pandas as pd
-import rdkit
-from rdkit import RDLogger
+import math
+from itertools import chain
+from typing import Union, List
+from joblib import Parallel, delayed
+
+import numpy as np
+import numpy.typing as npt
+import polars as pl
+from rdkit import Chem, RDLogger
 
 
-def validate_smiles(df: pd.DataFrame, smiles_column: str = 'SMILES'):
+def validate_smiles(smiles: Union[str, List[str], npt.NDArray[np.str_]]):
     """
-    Use RDKit to check if a SMILES can be converted to a valid molecule and check it for potential errors.
+    Check validity of SMILES and identify existing problems.
 
     Parameters
-    ---------------
-    df            : pd.DataFrame
-                    pd.DataFrame with SMILES
-    smiles_column : str
-                    Column in df holding SMILES of molecules
-    """
+    ----------
+    smiles: Union[str, List[str], npt.NDArray[np.str_]]
 
+    Returns
+    -------
+    smiles: Union[str, List[str]]
+    """
     RDLogger.DisableLog('rdApp.*')
 
-    def rdkit_validate(smiles: str):
-
-        if not isinstance(smiles, str):
-            return False, 'Not a string'
-
+    def process_smiles(smi):
+        if not isinstance(smi, str):
+            print(f"Expected smiles to be string, got {type(smi)} instead.")
+            return f"Wrong type: {type(smi)}"
+        if smi == "":
+            return "Empty string"
         try:
-            mol = rdkit.Chem.MolFromSmiles(smiles, sanitize=True)
-            if mol is not None:
-                return True, 'None'
-            else:
-                mol = rdkit.Chem.MolFromSmiles(smiles, sanitize=False)
-                if mol is None:
-                    return False, 'Invalid SMILES'
-
-                rdkit_problems = [str(problem.GetType()) for problem in rdkit.Chem.DetectChemistryProblems(mol)]
-                return False, str(rdkit_problems)
+            if Chem.MolFromSmiles(smi, sanitize=True) is not None:
+                return ""
+            if (mol := Chem.MolFromSmiles(smi, sanitize=False)) is None:
+                return "Invalid SMILES"
+            issues = [
+                str(problem.GetType()) for problem in Chem.DetectChemistryProblems(mol)
+            ]
+            return " | ".join(issues)
         except Exception as e:
-            print(f'Encountered unexpected error: {e}')
-            return False, 'Unknown error'
+            print(f"Unexpected error:\n{e}")
+            return f"Error: {e}"
 
-    out = df[smiles_column].apply(rdkit_validate).tolist()
+    if isinstance(smiles, str):
+        return process_smiles(smiles)
 
-    df.loc[:, 'Correct'] = [x[0] for x in out]
-    df.loc[:, 'Issues'] = [x[1] for x in out]
+    elif isinstance(smiles, list) or isinstance(smiles, np.ndarray):
+        return [
+            process_smiles(smi) for smi in smiles
+        ]
+    else:
+        raise TypeError(f"Expected smiles to be one of str, List[str], np.ndarray[str] got {type(smiles)} instead")
+
+
+def validate(df: pl.DataFrame, smiles_col: str = "SMILES", out_col: str = "Issues",
+             n_jobs: int = 1, batch_size: int = 512, timeout: int = 600):
+    """
+    Validate and identify potential issues with SMILES in a polars DataFrame.
+
+    Parameters
+    ----------
+    df: pl.DataFrame
+        Polars DataFrame with SMILES
+    smiles_col: str
+        Name of a column holding SMILES
+    out_col: str
+        Name of the output column
+    n_jobs: int, optional
+        Number of cores to use for calculations.
+    batch_size: int, optional
+        Number of SMILES per batch.
+    timeout: int
+        Timeout parameter for Parallel computation
+
+    Returns
+    -------
+    df: pl.DataFrame
+        Updated Polars DataFrame
+    """
+
+    smiles = list(set(df[smiles_col].drop_nulls().to_list()))
+    if len(smiles) == 0:
+        return df.with_columns(pl.lit(None).alias(out_col))
+    n_batches = math.ceil(len(smiles) / batch_size)
+    smiles_batches = np.array_split(smiles, n_batches)
+
+    results = Parallel(n_jobs=n_jobs, verbose=1, timeout=timeout, backend="loky")(
+        delayed(validate_smiles)(smiles=smi) for smi in smiles_batches
+    )
+
+    issues = list(chain.from_iterable(results))
+
+    smiles_df = pl.DataFrame({
+        "_smiles_key": smiles,
+        "_issues": issues
+    })
+
+    df = df.join(smiles_df, left_on=smiles_col, right_on="_smiles_key", how="left")
+
+    df = df.with_columns([
+        pl.col("_issues").alias(out_col)
+    ]).drop("_issues")
 
     return df
