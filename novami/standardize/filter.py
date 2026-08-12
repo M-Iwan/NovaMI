@@ -328,7 +328,108 @@ def flag_organometallics(df: pl.DataFrame, smiles_col: str = "SMILES", out_col: 
     return df
 
 
-def filter_properties_smiles(smiles: Union[str, List[str], npt.NDArray[np.str_]]):
+def flag_uncommon_smiles(smiles: Union[str, List[str], npt.NDArray[np.str_]]):
+    """
+    Flag SMILES containing elements not commonly found in druglike molecules.
+    Common set includes: H, B, C, N, O, F, Si, P, S, Cl, Se, Br, I.
+
+    Parameters
+    ----------
+    smiles: Union[str, List[str], npt.NDArray[np.str_]]
+
+    Returns
+    -------
+    smiles: Union[str, List[str]]
+    """
+    RDLogger.DisableLog('rdApp.*')
+
+    common = {
+        1, 5, 6, 7, 8, 9, 14, 15, 16, 17, 34, 35, 53
+    }
+
+    def process_smiles(smi: str):
+        if not isinstance(smi, str):
+            print(f"Expected smiles to be string, got {type(smi)} instead.")
+            return None
+        if (mol := Chem.MolFromSmiles(smi)) is None:
+            print(f'Unable to construct a valid molecule from < {smi} >')
+            return None
+        try:
+            unc = sorted(
+                {atom.GetSymbol() for atom in mol.GetAtoms() if atom.GetAtomicNum() not in common}
+            )
+            return " | ".join(unc)
+        except Exception as e:
+            print(f'Could not process < {smi} > due to \n{e}')
+            return None
+
+    if isinstance(smiles, str):
+        return process_smiles(smiles)
+
+    elif isinstance(smiles, (list, np.ndarray)):
+        return [process_smiles(smi) for smi in smiles]
+
+    else:
+        raise TypeError(f"Expected smiles to be one of str, List[str], npt.NDArray[np.str_] got {type(smiles)} instead")
+
+
+def flag_uncommon(df: pl.DataFrame, smiles_col: str = "SMILES", out_col: str = "Uncommon",
+                  n_jobs: int = 1, batch_size: int = 512, timeout: int = 600):
+    """
+    Flag rows whose SMILES contain elements not commonly found in druglike molecules.
+    Common set includes: H, B, C, N, O, F, Si, P, S, Cl, Se, Br, I.
+
+    Parameters
+    ----------
+    df: pl.DataFrame
+        Polars DataFrame with SMILES
+    smiles_col: str
+        Name of a column holding SMILES
+    out_col: str
+        Name of the output column
+    n_jobs: int, optional
+        Number of cores to use for calculations.
+    batch_size: int, optional
+        Number of SMILES per batch.
+    timeout: int
+        Timeout parameter for Parallel computation
+
+    Returns
+    -------
+    df: pl.DataFrame
+        Updated Polars DataFrame
+    """
+    smiles = list(set(df[smiles_col].drop_nulls().to_list()))
+
+    if len(smiles) == 0:
+        return df.with_columns(
+            pl.lit(None, dtype=pl.Utf8).alias(out_col)
+        )
+
+    n_batches = math.ceil(len(smiles) / batch_size)
+    smiles_batches = np.array_split(smiles, n_batches)
+
+    results = Parallel(n_jobs=n_jobs, verbose=1, timeout=timeout, backend="loky")(
+        delayed(flag_uncommon_smiles)(smiles=batch) for batch in smiles_batches
+    )
+
+    flags = list(chain.from_iterable(results))
+
+    flags_df = pl.DataFrame({
+        "_smiles_key": smiles,
+        "_flag": flags,
+    })
+
+    df = (df
+        .join(flags_df, left_on=smiles_col, right_on="_smiles_key", how="left")
+        .with_columns(pl.col("_flag").alias(out_col))
+        .drop("_flag")
+    )
+
+    return df
+
+
+def filter_extreme_properties_smiles(smiles: Union[str, List[str], npt.NDArray[np.str_]]):
     """
     Remove SMILES with properties outside predefined ranges. Values are based on
     the distributions of standardized ChEMBL (v. 36) compounds and are intended
@@ -401,10 +502,12 @@ def filter_properties_smiles(smiles: Union[str, List[str], npt.NDArray[np.str_]]
         raise TypeError(f"Expected smiles to be one of str, List[str], npt.NDArray[np.str_] got {type(smiles)} instead")
 
 
-def filter_properties(df: pl.DataFrame, smiles_col: str = "SMILES", out_col: str = "Filtered",
-                      n_jobs: int = 1, batch_size: int = 512, timeout: int = 600):
+def filter_extreme_properties(df: pl.DataFrame, smiles_col: str = "SMILES", out_col: str = "Filtered",
+                              n_jobs: int = 1, batch_size: int = 512, timeout: int = 600):
     """
-    Remove SMILES with properties outside predefined ranges, in a polars DataFrame.
+    Remove SMILES with properties outside predefined ranges, in a Polars Dataframe.
+    Values are based on the distributions of standardized ChEMBL (v. 36) compounds and
+    are intended to remove the most extreme cases only.
 
     Parameters
     ----------
@@ -438,7 +541,142 @@ def filter_properties(df: pl.DataFrame, smiles_col: str = "SMILES", out_col: str
     smiles_batches = np.array_split(smiles, n_batches)
 
     results = Parallel(n_jobs=n_jobs, verbose=1, timeout=timeout, backend="loky")(
-        delayed(filter_properties_smiles)(smiles=smi) for smi in smiles_batches
+        delayed(filter_extreme_properties_smiles)(smiles=smi) for smi in smiles_batches
+    )
+
+    results = list(chain.from_iterable(results))
+    filtered_smiles = [result[0] for result in results]
+    violations = [result[1] for result in results]
+
+    smiles_df = pl.DataFrame({
+        "_smiles_key": smiles,
+        "_new_smiles": filtered_smiles,
+        "_new_violations": violations
+    })
+
+    df = df.join(smiles_df, left_on=smiles_col, right_on="_smiles_key", how="left")
+
+    df = df.with_columns([
+        pl.col("_new_smiles").alias(out_col),
+        pl.col("_new_violations").alias("_property_violation")
+    ]).drop(["_new_smiles", "_new_violations"])
+
+    return df
+
+
+def filter_uncommon_properties_smiles(smiles: Union[str, List[str], npt.NDArray[np.str_]]):
+    """
+    Remove SMILES with properties outside predefined ranges. Values are based on
+    the distributions of standardized ChEMBL (v. 36) compounds and are intended
+    to remove compounds with values unlikely for druglike molecules.
+
+    Parameters
+    ----------
+    smiles: Union[str, List[str], npt.NDArray[np.str_]]
+
+    Returns
+    -------
+    smiles: Union[str, List[str]]
+    """
+    RDLogger.DisableLog('rdApp.*')
+
+    def process_smiles(smi):
+        if not isinstance(smi, str):
+            print(f'Expected smiles to be of type str, got {type(smi)} instead')
+            return None, f"Invalid type: {type(smi)}"
+        if (mol := Chem.MolFromSmiles(smi)) is None:
+            print(f'Unable to construct a valid molecule from < {smi} >')
+            return None, f"Invalid SMILES"
+        try:
+            mol_wt = rdMolDescriptors.CalcExactMolWt(mol)
+            log_p, mol_r = rdMolDescriptors.CalcCrippenDescriptors(mol)
+            num_heavy = rdMolDescriptors.CalcNumHeavyAtoms(mol)
+            num_hetero = rdMolDescriptors.CalcNumHeteroatoms(mol)
+            tpsa = rdMolDescriptors.CalcTPSA(mol)
+            n_hba = rdMolDescriptors.CalcNumHBA(mol)
+            n_hbd = rdMolDescriptors.CalcNumHBD(mol)
+            n_rot = rdMolDescriptors.CalcNumRotatableBonds(mol)
+            n_rings = rdMolDescriptors.CalcNumRings(mol)
+
+            bounds = [
+                ("MolWt", mol_wt, 32, 1024),
+                ("LogP", log_p, -7, 11),
+                ("MolMR", mol_r, 16, 288),
+                ("HeavyAtoms", num_heavy, 2, 80),
+                ("Heteroatoms", num_hetero, 0, 24),
+                ("TPSA", tpsa, 0, 288),
+                ("HBA", n_hba, 0, 16),
+                ("HBD", n_hbd, 0, 8),
+                ("RotatableBonds", n_rot, 0, 20),
+                ("Rings", n_rings, 0, 8),
+            ]
+
+            violations = []
+            for name, value, low, high in bounds:
+                if value < low:
+                    violations.append(f'{name}: {value:.2f} < {low}')
+                elif value > high:
+                    violations.append(f'{name}: {value:.2f} > {high}')
+
+            if violations:
+                return None, " | ".join(violations)
+            return smi, None
+
+        except Exception as e:
+            print(f"Could not filter < {smi} > due to \n{e}")
+            return None, f"Error:{e}"
+
+    if isinstance(smiles, str):
+        return process_smiles(smiles)
+
+    elif isinstance(smiles, list) or isinstance(smiles, np.ndarray):
+        return [
+            process_smiles(smi) for smi in smiles
+        ]
+    else:
+        raise TypeError(f"Expected smiles to be one of str, List[str], npt.NDArray[np.str_] got {type(smiles)} instead")
+
+
+def filter_uncommon_properties(df: pl.DataFrame, smiles_col: str = "SMILES", out_col: str = "Filtered",
+                               n_jobs: int = 1, batch_size: int = 512, timeout: int = 600):
+    """
+    Remove SMILES with properties outside predefined ranges, in a Polars Dataframe.
+    Values are based on the distributions of standardized ChEMBL (v. 36) compounds and are intended
+    to remove compounds with values unlikely for druglike molecules.
+
+    Parameters
+    ----------
+    df: pl.DataFrame
+        Polars DataFrame with SMILES
+    smiles_col: str
+        Name of a column holding SMILES
+    out_col: str
+        Name of the output column
+    n_jobs: int, optional
+        Number of cores to use for calculations.
+    batch_size: int, optional
+        Number of SMILES per batch.
+    timeout: int
+        Timeout parameter for Parallel computation
+
+    Returns
+    -------
+    df: pl.DataFrame
+        Updated Polars DataFrame
+    """
+    smiles = list(set(df[smiles_col].drop_nulls().to_list()))
+
+    if len(smiles) == 0:
+        return df.with_columns([
+            pl.lit(None, dtype=pl.Utf8).alias(out_col),
+            pl.lit(None, dtype=pl.Utf8).alias("_property_violation"),
+        ])
+
+    n_batches = math.ceil(len(smiles) / batch_size)
+    smiles_batches = np.array_split(smiles, n_batches)
+
+    results = Parallel(n_jobs=n_jobs, verbose=1, timeout=timeout, backend="loky")(
+        delayed(filter_extreme_properties_smiles)(smiles=smi) for smi in smiles_batches
     )
 
     results = list(chain.from_iterable(results))
