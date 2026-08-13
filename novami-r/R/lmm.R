@@ -7,10 +7,9 @@ library(dplyr)
 
 emm_options(pbkrtest.limit = 20000, lmerTest.limit = 20000, lmer.df = "satterthwaite")
 
-
 #' Build and validate a random-intercept LMM formula from a pre-filtered data frame.
 #'
-#' @param data           A data frame, already filtered to the target of interest.
+#' @param data           A data frame.
 #' @param response       Character. Name of the numeric response column.
 #' @param fixed_effects  Character vector of candidate fixed-effect column names.
 #' @param random_effects Character vector of candidate random-effect grouping column names.
