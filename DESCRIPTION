@@ -1,0 +1,16 @@
+Package: novami
+Title: ML/AI and Statistical Tools for Chemistry Applications
+Version: 0.4.1
+Authors@R: person("Mateusz", "Iwan", email = "mateusz.iwan@hotmail.com", role = c("aut", "cre"))
+Description: A collection of machine learning, AI, and statistical modelling tools
+    for chemistry and drug discovery applications.
+License: BDS-3
+Encoding: UTF-8
+Imports:
+    dplyr,
+    lme4,
+    lmerTest,
+    car,
+    performance,
+    emmeans
+RoxygenNote: 7.3.1
