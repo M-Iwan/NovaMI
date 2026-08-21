@@ -8,4 +8,5 @@ from novami import metrics
 from novami import nlp
 from novami import standardize
 from novami import ml
+from novami import stats
 from novami import visualize

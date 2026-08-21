@@ -189,8 +189,8 @@ def murcko_cluster(df: Union[pd.DataFrame, pl.DataFrame], smiles_col: str = 'SMI
     return df
 
 
-def cc_cluster(df: Union[pd.DataFrame, pl.DataFrame], features_col: str = 'Morgan', metric: str = 'jaccard',
-               threshold: float = 0.3, n_jobs: int = 4):
+def cc_cluster(df: Union[pd.DataFrame, pl.DataFrame], features_col: str = "ECFP", metric: str = 'jaccard',
+               threshold: float = 0.3, n_jobs: int = 1):
     """
     Cluster molecules using connected components graphs.
 
@@ -200,7 +200,7 @@ def cc_cluster(df: Union[pd.DataFrame, pl.DataFrame], features_col: str = 'Morga
     df: Union[pd.DataFrame, pl.DataFrame]
         A pandas or polars DataFrame
     features_col: str
-        Name of the column with fingerprints. Default is Morgan
+        Name of the column with fingerprints. Default is ECFP
     metric: str, optional
         The distance metric to use. Default is 'jaccard'.
         See scipy.spatial.distance.cdist for a list of supported metrics.

@@ -9,7 +9,7 @@ If you find the repo or its parts useful, it can be installed using:
 The usual versioning conventions are followed loosely, with minor version bumps usually meaning a substantial update to a specific module.
 
 ### Repository Structure
-Last updated on version: 0.4.1
+Last updated on version: 0.4.2
 
 ```
 novami/
@@ -61,12 +61,15 @@ novami/
 │   ├── nlp/  
 │   │   ├── article.py   Article class for retrieving metadata based on DOI/Names
 │   │   ├── cluster.py   Latent Dirichlet Allocation for abstract-based clustering
-│   │   └── tokenize.py   Word tokenizers
+│   │   └── tokenize.py   Word and document tokenizers
 │   ├── standardize/   
 │   │   ├── clean.py   Wrappers around RDKit functions for standaradizing SMILES
 │   │   ├── duplicates.py   Duplicate processing based on Median Absolute Deviation
 │   │   ├── filter.py   Filter based on selected features
 │   │   └── validate.py   Structure validation and error finding
+│   ├── stats/
+│   │   ├── tests.py   Statistical tests
+│   │   └── utils.py   Helper functions
 │   └── visualize/
 │       ├── ecdf.py   Emprical Cumulative Distribution Function of molecular inter-distance 
 │       ├── embedding.py   t-SNE and UMAP
