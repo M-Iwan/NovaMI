@@ -499,3 +499,41 @@ def dict_similarity(string: str, target_mapping: dict, method: str = 'fuzzy', th
     similarities.sort(key=lambda x: x[2], reverse=True)
 
     return similarities[:num_matches]
+
+
+def string_distance(string_1, string_2, method: str = 'levenshtein'):
+    """
+    Calulace distance between two strings.
+
+    Parameters
+    ----------
+    string_1: str
+        First string to compare
+    string_2: str
+        Second string to compare
+    method: str
+        Distance calculation method. Default is 'levenshtein'. Alternative is fuzzy
+
+    Returns
+    -------
+    distance: float
+        Calculated string distance
+    """
+    try:
+        import Levenshtein
+        from rapidfuzz import fuzz
+    except ImportError:
+        raise ImportError("Function < dict_similarity > requires < Levenshtein > and < rapidfuzz > libraries."
+                          "Please install them using < pip install Levenshtein rapidfuzz >")
+
+    if not all([isinstance(string_1, str), isinstance(string_2, str)]):
+        raise TypeError(f"Expected both passed values to be strings, got {type(string_1)} and {type(string_2)} instead")
+
+    if method == "levenshtein":
+        distance = np.round(Levenshtein.distance(string_1, string_2) / max(len(string_1), len(string_2)), 3)
+    elif method == "fuzzy":
+        distance = 1 - np.round(fuzz.ratio(string_1, string_2) / 100.0, 3)
+    else:
+        raise ValueError(f"Available options for method are: levenshtein, fuzzy")
+
+    return distance
