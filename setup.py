@@ -8,7 +8,7 @@ setup(
     packages=find_packages(),
     include_package_data=True,
     package_data={
-        'novami': ['files/*.joblib'],
+        "novami": ["files/*.joblib"],
     },
     install_requires=[
         "numpy",
@@ -16,10 +16,14 @@ setup(
         "polars",
         "matplotlib",
         "seaborn",
-        "scikit-learn",
-        "rdkit",
         "scipy",
-        "torch",
-        "torch_geometric"
     ],
+    extras_require={
+        "full": [
+            "scikit-learn",
+            "rdkit",
+            "torch",
+            "torch_geometric",
+        ],
+    },
 )
