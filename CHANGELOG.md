@@ -1,3 +1,14 @@
+# [0.4.2]: 21-08-2026
+
+[Added]
+- R-based repository called novami-r with code for Linear Mixed Models analyses
+- More functions for flagging and filtering compounds
+- New module: stats; so far with Mann-Whitney U-test
+- New function for string distances
+
+[Changed]
+- tokenize_documents supports various filters (alpha, alnum, ascii) 
+
 # [0.4.1]: 11-08-2026
 
 [Added]
